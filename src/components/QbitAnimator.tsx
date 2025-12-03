@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, RefreshCw, Move, Layers, Circle, Square, Save, Trash2 } from 'lucide-react';
+import { Play, Pause, RefreshCw, Move, Layers, Circle, Square, Save, Trash2, Camera, Download } from 'lucide-react';
 
 // Color Palette based on the Qbit character
 const COLORS = {
@@ -83,6 +83,44 @@ const QbitAnimator = () => {
   const recordStartTime = useRef<number>(0);
   const lastRecordTime = useRef<number>(0);
   const customAnimationRef = useRef<number>();
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  // Snapshot download function
+  const downloadSnapshot = () => {
+    if (!svgRef.current) return;
+    
+    const svg = svgRef.current;
+    const serializer = new XMLSerializer();
+    const svgString = serializer.serializeToString(svg);
+    
+    // Create a canvas to render the SVG
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 800;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    // Fill with background
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, 800, 800);
+    
+    const img = new Image();
+    const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    
+    img.onload = () => {
+      ctx.drawImage(img, 200, 200, 400, 400);
+      URL.revokeObjectURL(url);
+      
+      // Download
+      const link = document.createElement('a');
+      link.download = `qbit-pose-${Date.now()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    };
+    
+    img.src = url;
+  };
 
   // --- Animation Loop ---
   const animate = (time: number) => {
@@ -691,16 +729,26 @@ const QbitAnimator = () => {
     <div className="flex flex-col md:flex-row h-screen bg-background text-foreground overflow-hidden">
       
       {/* --- Visualizer Stage --- */}
-      <div className="flex-1 flex flex-col items-center justify-center animator-stage p-4">
+      <div className="flex-1 flex flex-col items-center justify-center animator-stage p-4 relative">
         <SkeletonRig />
 
         <div className="stage-badge">
           Qbit Animator v1.8
         </div>
         
+        {/* Snapshot Button */}
+        <button
+          onClick={downloadSnapshot}
+          className="absolute top-4 right-4 p-2 rounded-lg bg-secondary/80 hover:bg-secondary text-secondary-foreground transition-all flex items-center gap-2 text-sm"
+          title="Download Snapshot"
+        >
+          <Camera size={16} />
+          <Download size={14} />
+        </button>
+
         {/* The SVG Rig */}
         <div className="character-stage">
-           <svg width="400" height="400" viewBox="0 0 400 400" className="overflow-visible">
+           <svg ref={svgRef} width="400" height="400" viewBox="0 0 400 400" className="overflow-visible">
               <defs>
                 <filter id="glow">
                   <feGaussianBlur stdDeviation="2.5" result="coloredBlur"/>
