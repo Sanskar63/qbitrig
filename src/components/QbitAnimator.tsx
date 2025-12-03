@@ -112,22 +112,35 @@ const QbitAnimator = () => {
       targetTorso = phase * 10;
       targetFlap = 10 + Math.abs(phase) * 5;
     } else if (animationType === 'cartwheel') {
-      const cwSpeed = t * 0.15;
-      const rotationDeg = (cwSpeed * 180 / Math.PI) % 360;
+      const cwSpeed = t * 0.3;
+      const rotation = (cwSpeed % (Math.PI * 2));
+      const rotationDeg = (rotation * 180 / Math.PI);
+      
       setBodyRotation(rotationDeg);
-      setLeftArmAngle(-160);
-      setRightArmAngle(-160);
-      setLeftLegAngle(0);
-      setRightLegAngle(0);
-      setHeadTilt(0);
-      setRootX(Math.sin(cwSpeed) * 50);
-      const groundOffset = Math.cos(cwSpeed); 
-      const yShift = (1 - groundOffset) * 35; 
-      setRootY(yShift);
-      const inversionFactor = Math.max(0, -Math.cos(cwSpeed));
-      setLeftLegAngle(-inversionFactor * 30);
-      setRightLegAngle(inversionFactor * 30);
-      targetFlap = inversionFactor * 15; 
+      
+      // Continuous lateral movement
+      const lateralProgress = (cwSpeed / (Math.PI * 2)) % 1;
+      setRootX(-100 + lateralProgress * 200);
+      
+      // Height - highest when inverted (90°)
+      const yOffset = Math.sin(rotation) * 60;
+      setRootY(Math.max(0, yOffset));
+      
+      // Arms reach toward ground during inverted phase
+      const armPhase = Math.sin(rotation);
+      setLeftArmAngle(-90 - armPhase * 70);
+      setRightArmAngle(-90 - armPhase * 70);
+      
+      // Legs spread wide during inverted phase
+      const legSpread = Math.abs(Math.sin(rotation)) * 50;
+      setLeftLegAngle(-legSpread);
+      setRightLegAngle(legSpread);
+      
+      // Head counter-rotation
+      setHeadTilt(-rotationDeg * 0.3);
+      
+      // Coat flaps when inverted
+      targetFlap = Math.abs(Math.sin(rotation)) * 15;
     } else if (animationType === 'ophelia') {
       const slowT = t * 0.8;
       const sway = Math.sin(slowT);
@@ -419,7 +432,7 @@ const QbitAnimator = () => {
               </defs>
               <Shadow />
               {showPoop && <Poop />}
-              <g transform={`translate(${rootX}, ${rootY}) rotate(${bodyRotation} 200 300)`}>
+              <g transform={`translate(${rootX}, ${rootY}) rotate(${bodyRotation} 200 370)`}>
                 <LeftLeg />
                 <RightLeg />
                 <Hips />
