@@ -45,6 +45,8 @@ const QbitAnimator = () => {
   const [winkProgress, setWinkProgress] = useState(0);
   const [isSad, setIsSad] = useState(false);
   const [showPoop, setShowPoop] = useState(false);
+  const [handContactX, setHandContactX] = useState(0);
+  const [handContactOpacity, setHandContactOpacity] = useState(0);
 
   // Auto-animation state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -141,6 +143,11 @@ const QbitAnimator = () => {
       
       // Coat flaps when inverted
       targetFlap = Math.abs(Math.sin(rotation)) * 15;
+      
+      // Hand contact shadow - visible when hands near ground (60°-120°)
+      const handContact = Math.sin(rotation);
+      setHandContactOpacity(handContact > 0.5 ? (handContact - 0.5) * 2 : 0);
+      setHandContactX(200 + rootX);
     } else if (animationType === 'ophelia') {
       const slowT = t * 0.8;
       const sway = Math.sin(slowT);
@@ -213,6 +220,7 @@ const QbitAnimator = () => {
       setRightLegAngle(0);
       setTorsoAngle(0);
       setCoatFlap(0);
+      setHandContactOpacity(0);
     }
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
@@ -431,6 +439,15 @@ const QbitAnimator = () => {
                 </filter>
               </defs>
               <Shadow />
+              {handContactOpacity > 0 && (
+                <ellipse 
+                  cx={handContactX} 
+                  cy="378" 
+                  rx={12 + handContactOpacity * 8} 
+                  ry={4 + handContactOpacity * 2} 
+                  fill={`rgba(0,0,0,${handContactOpacity * 0.4})`} 
+                />
+              )}
               {showPoop && <Poop />}
               <g transform={`translate(${rootX}, ${rootY}) rotate(${bodyRotation} 200 370)`}>
                 <LeftLeg />
