@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, RefreshCw, Move, Layers } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Play, Pause, RefreshCw, Move, Layers, Circle, Square, Save, Trash2 } from 'lucide-react';
 
 // Color Palette based on the Qbit character
 const COLORS = {
@@ -15,6 +15,26 @@ const COLORS = {
   eyeBlack: '#0f172a',
   badgeOrange: '#fbbf24'
 };
+
+// Types for recording system
+interface Keyframe {
+  time: number;
+  leftArmAngle: number;
+  rightArmAngle: number;
+  leftLegAngle: number;
+  rightLegAngle: number;
+  legOffset: number;
+  headTilt: number;
+  torsoAngle: number;
+  coatFlap: number;
+  expression: 'neutral' | 'happy' | 'sad' | 'anger' | 'surprise' | 'confusion' | 'smirk' | 'cry';
+}
+
+interface SavedAnimation {
+  name: string;
+  keyframes: Keyframe[];
+  duration: number;
+}
 
 const QbitAnimator = () => {
   // --- State for Animation Controls ---
@@ -52,6 +72,17 @@ const QbitAnimator = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [animationType, setAnimationType] = useState('idle');
   const requestRef = useRef<number>();
+
+  // Recording system state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordedKeyframes, setRecordedKeyframes] = useState<Keyframe[]>([]);
+  const [savedAnimations, setSavedAnimations] = useState<SavedAnimation[]>([]);
+  const [saveName, setSaveName] = useState('');
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [playingCustom, setPlayingCustom] = useState<string | null>(null);
+  const recordStartTime = useRef<number>(0);
+  const lastRecordTime = useRef<number>(0);
+  const customAnimationRef = useRef<number>();
 
   // --- Animation Loop ---
   const animate = (time: number) => {
@@ -264,6 +295,7 @@ const QbitAnimator = () => {
 
   const resetPose = () => {
     setIsPlaying(false);
+    setPlayingCustom(null);
     setLeftArmAngle(10);
     setRightArmAngle(-10);
     setLegOffset(0);
@@ -278,6 +310,131 @@ const QbitAnimator = () => {
     setTorsoAngle(0);
     setCoatFlap(0);
   };
+
+  // Recording functions
+  const startRecording = () => {
+    setIsPlaying(false);
+    setPlayingCustom(null);
+    setRecordedKeyframes([]);
+    recordStartTime.current = Date.now();
+    lastRecordTime.current = 0;
+    setIsRecording(true);
+    // Capture initial keyframe
+    captureKeyframe(0);
+  };
+
+  const captureKeyframe = useCallback((time: number) => {
+    const keyframe: Keyframe = {
+      time,
+      leftArmAngle,
+      rightArmAngle,
+      leftLegAngle,
+      rightLegAngle,
+      legOffset,
+      headTilt,
+      torsoAngle,
+      coatFlap,
+      expression
+    };
+    setRecordedKeyframes(prev => [...prev, keyframe]);
+  }, [leftArmAngle, rightArmAngle, leftLegAngle, rightLegAngle, legOffset, headTilt, torsoAngle, coatFlap, expression]);
+
+  // Capture keyframes while recording (on pose change)
+  useEffect(() => {
+    if (!isRecording) return;
+    const elapsed = Date.now() - recordStartTime.current;
+    // Only record if enough time has passed (throttle to ~60fps)
+    if (elapsed - lastRecordTime.current > 50) {
+      captureKeyframe(elapsed);
+      lastRecordTime.current = elapsed;
+    }
+  }, [isRecording, leftArmAngle, rightArmAngle, leftLegAngle, rightLegAngle, legOffset, headTilt, torsoAngle, coatFlap, expression, captureKeyframe]);
+
+  const stopRecording = () => {
+    setIsRecording(false);
+    if (recordedKeyframes.length > 1) {
+      setShowSaveDialog(true);
+    }
+  };
+
+  const saveAnimation = () => {
+    if (!saveName.trim() || recordedKeyframes.length < 2) return;
+    const duration = recordedKeyframes[recordedKeyframes.length - 1].time;
+    const newAnimation: SavedAnimation = {
+      name: saveName.trim(),
+      keyframes: [...recordedKeyframes],
+      duration
+    };
+    setSavedAnimations(prev => [...prev, newAnimation]);
+    setSaveName('');
+    setShowSaveDialog(false);
+    setRecordedKeyframes([]);
+  };
+
+  const deleteAnimation = (name: string) => {
+    setSavedAnimations(prev => prev.filter(a => a.name !== name));
+    if (playingCustom === name) {
+      setPlayingCustom(null);
+    }
+  };
+
+  // Play custom animation
+  const playCustomAnimation = (animation: SavedAnimation) => {
+    setIsPlaying(false);
+    setPlayingCustom(animation.name);
+    
+    const startTime = Date.now();
+    
+    const animate = () => {
+      const elapsed = (Date.now() - startTime) % animation.duration;
+      
+      // Find surrounding keyframes
+      let prevKf = animation.keyframes[0];
+      let nextKf = animation.keyframes[1] || animation.keyframes[0];
+      
+      for (let i = 0; i < animation.keyframes.length - 1; i++) {
+        if (animation.keyframes[i].time <= elapsed && animation.keyframes[i + 1].time > elapsed) {
+          prevKf = animation.keyframes[i];
+          nextKf = animation.keyframes[i + 1];
+          break;
+        }
+      }
+      
+      // Interpolate
+      const timeDiff = nextKf.time - prevKf.time;
+      const t = timeDiff > 0 ? (elapsed - prevKf.time) / timeDiff : 0;
+      
+      setLeftArmAngle(prevKf.leftArmAngle + (nextKf.leftArmAngle - prevKf.leftArmAngle) * t);
+      setRightArmAngle(prevKf.rightArmAngle + (nextKf.rightArmAngle - prevKf.rightArmAngle) * t);
+      setLeftLegAngle(prevKf.leftLegAngle + (nextKf.leftLegAngle - prevKf.leftLegAngle) * t);
+      setRightLegAngle(prevKf.rightLegAngle + (nextKf.rightLegAngle - prevKf.rightLegAngle) * t);
+      setLegOffset(prevKf.legOffset + (nextKf.legOffset - prevKf.legOffset) * t);
+      setHeadTilt(prevKf.headTilt + (nextKf.headTilt - prevKf.headTilt) * t);
+      setTorsoAngle(prevKf.torsoAngle + (nextKf.torsoAngle - prevKf.torsoAngle) * t);
+      setCoatFlap(prevKf.coatFlap + (nextKf.coatFlap - prevKf.coatFlap) * t);
+      setExpression(prevKf.expression);
+      
+      customAnimationRef.current = requestAnimationFrame(animate);
+    };
+    
+    customAnimationRef.current = requestAnimationFrame(animate);
+  };
+
+  const stopCustomAnimation = () => {
+    if (customAnimationRef.current) {
+      cancelAnimationFrame(customAnimationRef.current);
+    }
+    setPlayingCustom(null);
+  };
+
+  // Cleanup custom animation on unmount
+  useEffect(() => {
+    return () => {
+      if (customAnimationRef.current) {
+        cancelAnimationFrame(customAnimationRef.current);
+      }
+    };
+  }, []);
 
   // --- RIG COMPONENTS ---
   
@@ -641,8 +798,107 @@ const QbitAnimator = () => {
         </div>
 
         <hr className="border-border" />
-        <div className={`space-y-6 transition-opacity ${isPlaying ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-           <label className="control-label">Manual Pose</label>
+
+        {/* Recording Controls */}
+        <div className="space-y-3">
+          <label className="control-label">Record Animation</label>
+          <div className="flex gap-2">
+            {!isRecording ? (
+              <button
+                onClick={startRecording}
+                className="flex-1 control-btn bg-destructive/20 hover:bg-destructive/30 text-destructive"
+                disabled={isPlaying || !!playingCustom}
+              >
+                <Circle size={16} className="fill-current" /> Record
+              </button>
+            ) : (
+              <button
+                onClick={stopRecording}
+                className="flex-1 control-btn bg-destructive text-destructive-foreground animate-pulse"
+              >
+                <Square size={16} className="fill-current" /> Stop ({recordedKeyframes.length} frames)
+              </button>
+            )}
+          </div>
+          
+          {/* Save Dialog */}
+          {showSaveDialog && (
+            <div className="bg-secondary/50 p-3 rounded-lg space-y-2 border border-border">
+              <input
+                type="text"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                placeholder="Animation name..."
+                className="w-full px-3 py-2 rounded-md bg-background border border-border text-foreground text-sm"
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={saveAnimation}
+                  disabled={!saveName.trim()}
+                  className="flex-1 control-btn bg-primary text-primary-foreground disabled:opacity-50"
+                >
+                  <Save size={14} /> Save
+                </button>
+                <button
+                  onClick={() => { setShowSaveDialog(false); setRecordedKeyframes([]); }}
+                  className="px-3 control-btn"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Saved Animations */}
+          {savedAnimations.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-muted-foreground uppercase tracking-wider">Saved Animations</div>
+              {savedAnimations.map((anim) => (
+                <div
+                  key={anim.name}
+                  className={`flex items-center gap-2 p-2 rounded-md transition-all ${
+                    playingCustom === anim.name 
+                      ? 'bg-primary/20 border border-primary' 
+                      : 'bg-secondary/50 hover:bg-secondary'
+                  }`}
+                >
+                  <span className="flex-1 text-sm font-medium truncate">{anim.name}</span>
+                  <span className="text-xs text-muted-foreground">{(anim.duration / 1000).toFixed(1)}s</span>
+                  {playingCustom === anim.name ? (
+                    <button
+                      onClick={stopCustomAnimation}
+                      className="p-1.5 rounded bg-primary text-primary-foreground"
+                    >
+                      <Pause size={12} />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => playCustomAnimation(anim)}
+                      className="p-1.5 rounded bg-primary/20 hover:bg-primary/30 text-primary"
+                      disabled={isPlaying || isRecording}
+                    >
+                      <Play size={12} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => deleteAnimation(anim.name)}
+                    className="p-1.5 rounded hover:bg-destructive/20 text-destructive"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <hr className="border-border" />
+        <div className={`space-y-6 transition-opacity ${isPlaying || playingCustom ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+           <label className="control-label flex items-center gap-2">
+             Manual Pose
+             {isRecording && <span className="w-2 h-2 rounded-full bg-destructive animate-pulse" />}
+           </label>
 
            {/* Arms */}
            <div className="space-y-4">
