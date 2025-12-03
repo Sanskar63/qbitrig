@@ -267,6 +267,41 @@ const QbitAnimator = () => {
       setRightArmAngle(-140 + Math.sin(jumpSpeed) * 10);
       targetTorso = -10;
       targetFlap = 15 + Math.sin(jumpSpeed) * 10;
+    } else if (animationType === 'moonwalk') {
+      const mwSpeed = t * 1.5;
+      const cycle = mwSpeed % (Math.PI * 2);
+      const phase = Math.sin(cycle);
+      
+      // Backward sliding movement
+      setRootX(Math.sin(mwSpeed * 0.5) * 40);
+      
+      // Alternating leg positions for moonwalk illusion
+      if (phase > 0) {
+        setLeftLegAngle(-15);  // Left leg back (planted, sliding)
+        setRightLegAngle(10);  // Right leg forward (on toes)
+      } else {
+        setLeftLegAngle(10);   // Left leg forward (on toes)
+        setRightLegAngle(-15); // Right leg back (planted, sliding)
+      }
+      
+      // Subtle bounce for the toe-lift effect
+      setLegOffset(Math.abs(phase) * 3);
+      
+      // Slight forward lean - classic MJ posture
+      targetTorso = 8;
+      
+      // Arms in relaxed position with subtle counter-movement
+      setLeftArmAngle(20 + phase * 5);
+      setRightArmAngle(-20 - phase * 5);
+      
+      // Head slightly down, looking cool
+      setHeadTilt(-5 + Math.sin(mwSpeed * 2) * 2);
+      
+      // Minimal hip sway
+      setHipsSway(phase * 3);
+      
+      // Coat responds to backward motion
+      targetFlap = 5 + Math.abs(phase) * 3;
     }
 
     setTorsoAngle(targetTorso);
@@ -801,6 +836,7 @@ const QbitAnimator = () => {
             <AnimationButton type="walk" label="Walk" />
             <AnimationButton type="wave" label="Wave" />
             <AnimationButton type="floss" label="Floss" />
+            <AnimationButton type="moonwalk" label="Moonwalk" />
             <AnimationButton type="cartwheel" label="Slow Wheel" />
             <AnimationButton type="winning" label="Winning" />
             <AnimationButton type="ophelia" label="Fate of Ophelia" />
