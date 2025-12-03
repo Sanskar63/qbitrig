@@ -43,7 +43,7 @@ const QbitAnimator = () => {
   const [blinkProgress, setBlinkProgress] = useState(0);
   const [isWinking, setIsWinking] = useState(false);
   const [winkProgress, setWinkProgress] = useState(0);
-  const [isSad, setIsSad] = useState(false);
+  const [expression, setExpression] = useState<'neutral' | 'happy' | 'sad' | 'anger' | 'surprise' | 'confusion' | 'smirk' | 'cry'>('neutral');
   const [showPoop, setShowPoop] = useState(false);
   const [handContactX, setHandContactX] = useState(0);
   const [handContactOpacity, setHandContactOpacity] = useState(0);
@@ -270,7 +270,7 @@ const QbitAnimator = () => {
     setHeadTilt(0);
     setBodyRotation(0);
     setRootY(0);
-    setIsSad(false);
+    setExpression('neutral');
     setShowPoop(false);
     setHipsSway(0);
     setLeftLegAngle(0);
@@ -386,25 +386,140 @@ const QbitAnimator = () => {
     </g>
   );
 
-  const Head = () => (
-    <g transform={`translate(200, 230) rotate(${headTilt}) translate(-200, -230)`}>
-      <rect x="160" y="170" width="80" height="70" rx="35" fill={COLORS.faceWhite} />
-      <g>
-        <ellipse cx="185" cy={isSad ? 208 : 205} rx="5" ry="8" fill={COLORS.eyeBlack} transform={isSad ? "rotate(-10 185 208)" : ""} />
-        <path d={`M175,205 h20 a1,1 0 0 0 -20,0`} fill={COLORS.faceWhite} style={{ transformOrigin: '185px 205px', transform: `scaleY(${blinkProgress})` }} />
-        <ellipse cx="215" cy={isSad ? 208 : 205} rx="5" ry="8" fill={COLORS.eyeBlack} transform={isSad ? "rotate(10 215 208)" : ""} />
-        <path d={`M205,205 h20 a1,1 0 0 0 -20,0`} fill={COLORS.faceWhite} style={{ transformOrigin: '215px 205px', transform: `scaleY(${Math.max(blinkProgress, winkProgress)})` }} />
+  const Head = () => {
+    // Eye configurations based on expression
+    const getEyeConfig = () => {
+      switch (expression) {
+        case 'happy':
+          return { leftY: 205, rightY: 205, leftRx: 5, leftRy: 4, rightRx: 5, rightRy: 4, leftRotate: 0, rightRotate: 0, squint: true };
+        case 'sad':
+          return { leftY: 208, rightY: 208, leftRx: 5, leftRy: 8, rightRx: 5, rightRy: 8, leftRotate: -10, rightRotate: 10, squint: false };
+        case 'anger':
+          return { leftY: 207, rightY: 207, leftRx: 5, leftRy: 6, rightRx: 5, rightRy: 6, leftRotate: 15, rightRotate: -15, squint: false };
+        case 'surprise':
+          return { leftY: 203, rightY: 203, leftRx: 7, leftRy: 10, rightRx: 7, rightRy: 10, leftRotate: 0, rightRotate: 0, squint: false };
+        case 'confusion':
+          return { leftY: 205, rightY: 208, leftRx: 5, leftRy: 8, rightRx: 5, rightRy: 6, leftRotate: -5, rightRotate: 10, squint: false };
+        case 'smirk':
+          return { leftY: 205, rightY: 205, leftRx: 5, leftRy: 8, rightRx: 4, rightRy: 5, leftRotate: 0, rightRotate: 0, squint: false };
+        case 'cry':
+          return { leftY: 208, rightY: 208, leftRx: 5, leftRy: 8, rightRx: 5, rightRy: 8, leftRotate: -15, rightRotate: 15, squint: false };
+        default:
+          return { leftY: 205, rightY: 205, leftRx: 5, leftRy: 8, rightRx: 5, rightRy: 8, leftRotate: 0, rightRotate: 0, squint: false };
+      }
+    };
+
+    // Mouth configurations based on expression
+    const getMouth = () => {
+      switch (expression) {
+        case 'happy':
+          return <path d="M188,222 Q200,232 212,222" fill="none" stroke={COLORS.eyeBlack} strokeWidth="2.5" strokeLinecap="round" />;
+        case 'sad':
+          return <path d="M188,228 Q200,220 212,228" fill="none" stroke={COLORS.eyeBlack} strokeWidth="2.5" strokeLinecap="round" />;
+        case 'anger':
+          return <path d="M190,225 H210" fill="none" stroke={COLORS.eyeBlack} strokeWidth="2.5" strokeLinecap="round" />;
+        case 'surprise':
+          return <ellipse cx="200" cy="226" rx="6" ry="8" fill={COLORS.eyeBlack} />;
+        case 'confusion':
+          return <path d="M190,224 Q195,228 205,222 Q210,226 212,224" fill="none" stroke={COLORS.eyeBlack} strokeWidth="2" strokeLinecap="round" />;
+        case 'smirk':
+          return <path d="M192,224 Q205,228 215,220" fill="none" stroke={COLORS.eyeBlack} strokeWidth="2.5" strokeLinecap="round" />;
+        case 'cry':
+          return (
+            <>
+              <path d="M188,228 Q200,220 212,228" fill="none" stroke={COLORS.eyeBlack} strokeWidth="2.5" strokeLinecap="round" />
+              {/* Tears */}
+              <ellipse cx="182" cy="215" rx="2" ry="4" fill="#60a5fa" opacity="0.8" />
+              <ellipse cx="218" cy="215" rx="2" ry="4" fill="#60a5fa" opacity="0.8" />
+            </>
+          );
+        default:
+          return <path d="M192,224 Q200,226 208,224" fill="none" stroke={COLORS.eyeBlack} strokeWidth="2" strokeLinecap="round" />;
+      }
+    };
+
+    // Eyebrow configurations
+    const getEyebrows = () => {
+      switch (expression) {
+        case 'anger':
+          return (
+            <>
+              <path d="M177,192 L193,196" stroke={COLORS.eyeBlack} strokeWidth="2.5" strokeLinecap="round" />
+              <path d="M207,196 L223,192" stroke={COLORS.eyeBlack} strokeWidth="2.5" strokeLinecap="round" />
+            </>
+          );
+        case 'sad':
+        case 'cry':
+          return (
+            <>
+              <path d="M177,196 L193,192" stroke={COLORS.eyeBlack} strokeWidth="2" strokeLinecap="round" />
+              <path d="M207,192 L223,196" stroke={COLORS.eyeBlack} strokeWidth="2" strokeLinecap="round" />
+            </>
+          );
+        case 'surprise':
+          return (
+            <>
+              <path d="M177,190 Q185,186 193,190" stroke={COLORS.eyeBlack} strokeWidth="2" strokeLinecap="round" fill="none" />
+              <path d="M207,190 Q215,186 223,190" stroke={COLORS.eyeBlack} strokeWidth="2" strokeLinecap="round" fill="none" />
+            </>
+          );
+        case 'confusion':
+          return (
+            <>
+              <path d="M177,194 L193,192" stroke={COLORS.eyeBlack} strokeWidth="2" strokeLinecap="round" />
+              <path d="M207,196 L223,192" stroke={COLORS.eyeBlack} strokeWidth="2" strokeLinecap="round" />
+            </>
+          );
+        default:
+          return null;
+      }
+    };
+
+    const eyeConfig = getEyeConfig();
+
+    return (
+      <g transform={`translate(200, 230) rotate(${headTilt}) translate(-200, -230)`}>
+        {/* Face */}
+        <rect x="160" y="170" width="80" height="70" rx="35" fill={COLORS.faceWhite} />
+        
+        {/* Eyes */}
+        <g>
+          {eyeConfig.squint ? (
+            <>
+              <path d="M178,205 Q185,200 192,205" stroke={COLORS.eyeBlack} strokeWidth="3" strokeLinecap="round" fill="none" />
+              <path d="M208,205 Q215,200 222,205" stroke={COLORS.eyeBlack} strokeWidth="3" strokeLinecap="round" fill="none" />
+            </>
+          ) : (
+            <>
+              <ellipse cx="185" cy={eyeConfig.leftY} rx={eyeConfig.leftRx} ry={eyeConfig.leftRy} fill={COLORS.eyeBlack} transform={`rotate(${eyeConfig.leftRotate} 185 ${eyeConfig.leftY})`} />
+              <ellipse cx="215" cy={eyeConfig.rightY} rx={eyeConfig.rightRx} ry={eyeConfig.rightRy} fill={COLORS.eyeBlack} transform={`rotate(${eyeConfig.rightRotate} 215 ${eyeConfig.rightY})`} />
+            </>
+          )}
+          {/* Blink overlays */}
+          <path d={`M175,205 h20 a1,1 0 0 0 -20,0`} fill={COLORS.faceWhite} style={{ transformOrigin: '185px 205px', transform: `scaleY(${blinkProgress})` }} />
+          <path d={`M205,205 h20 a1,1 0 0 0 -20,0`} fill={COLORS.faceWhite} style={{ transformOrigin: '215px 205px', transform: `scaleY(${Math.max(blinkProgress, winkProgress)})` }} />
+        </g>
+
+        {/* Eyebrows */}
+        {getEyebrows()}
+
+        {/* Mouth */}
+        {getMouth()}
+
+        {/* Hat */}
+        <path d="M160,180 V160 Q160,130 200,130 Q240,130 240,160 V180 H160" fill={COLORS.hatBlue} />
+        <path d="M150,180 H250 V190 Q250,200 240,200 H160 Q150,200 150,190 Z" fill={COLORS.hatYellow} />
+        
+        {/* Badge */}
+        <circle cx="200" cy="160" r="12" fill={COLORS.badgeOrange} />
+        <g transform={expression === 'sad' || expression === 'cry' ? "translate(200, 160) rotate(180) translate(-200, -160)" : ""}>
+          <circle cx="196" cy="158" r="1.5" fill="#5D4037" />
+          <circle cx="204" cy="158" r="1.5" fill="#5D4037" />
+          <path d="M196,162 Q200,166 204,162" fill="none" stroke="#5D4037" strokeWidth="1.5" strokeLinecap="round" />
+        </g>
       </g>
-      <path d="M160,180 V160 Q160,130 200,130 Q240,130 240,160 V180 H160" fill={COLORS.hatBlue} />
-      <path d="M150,180 H250 V190 Q250,200 240,200 H160 Q150,200 150,190 Z" fill={COLORS.hatYellow} />
-      <circle cx="200" cy="160" r="12" fill={COLORS.badgeOrange} />
-      <g transform={isSad ? "translate(200, 160) rotate(180) translate(-200, -160)" : ""}>
-        <circle cx="196" cy="158" r="1.5" fill="#5D4037" />
-        <circle cx="204" cy="158" r="1.5" fill="#5D4037" />
-        <path d="M196,162 Q200,166 204,162" fill="none" stroke="#5D4037" strokeWidth="1.5" strokeLinecap="round" />
-      </g>
-    </g>
-  );
+    );
+  };
 
   const AnimationButton = ({ type, label }: { type: string; label: string }) => (
     <button 
@@ -505,7 +620,27 @@ const QbitAnimator = () => {
 
         <hr className="border-border" />
 
-        {/* Manual Controls */}
+        {/* Expression Controls */}
+        <div className="space-y-3">
+          <label className="control-label">Expression</label>
+          <div className="grid grid-cols-4 gap-2">
+            {(['neutral', 'happy', 'sad', 'anger', 'surprise', 'confusion', 'smirk', 'cry'] as const).map((expr) => (
+              <button
+                key={expr}
+                onClick={() => setExpression(expr)}
+                className={`p-2 rounded-md text-xs font-medium transition-all capitalize ${
+                  expression === expr 
+                    ? 'bg-primary text-primary-foreground shadow-lg' 
+                    : 'bg-secondary hover:bg-secondary/80 text-secondary-foreground'
+                }`}
+              >
+                {expr}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <hr className="border-border" />
         <div className={`space-y-6 transition-opacity ${isPlaying ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
            <label className="control-label">Manual Pose</label>
 
