@@ -343,6 +343,49 @@ const QbitAnimator = () => {
       
       // Coat responds to backward motion
       targetFlap = 5 + Math.abs(phase) * 3;
+    } else if (animationType === 'srk') {
+      // Famous Shah Rukh Khan arms-spread pose
+      const srkSpeed = t * 0.8;
+      const cycle = (srkSpeed % (Math.PI * 4)) / (Math.PI * 4); // 0-1 slow cycle
+      
+      if (cycle < 0.3) {
+        // Build up - arms gradually spreading
+        const p = cycle / 0.3;
+        setLeftArmAngle(10 + p * 80); // Arms going out
+        setRightArmAngle(-10 - p * 80);
+        setHeadTilt(p * 15); // Head tilting back
+        targetTorso = -p * 15; // Slight lean back
+        setLeftLegAngle(0);
+        setRightLegAngle(0);
+        setLegOffset(0);
+        targetFlap = 5 + p * 15;
+      } else if (cycle < 0.7) {
+        // Hold the iconic pose with subtle sway
+        const holdPhase = ((cycle - 0.3) / 0.4) * Math.PI * 2;
+        setLeftArmAngle(90 + Math.sin(holdPhase) * 5); // Arms wide with subtle wave
+        setRightArmAngle(-90 + Math.sin(holdPhase) * 5);
+        setHeadTilt(15 + Math.sin(holdPhase * 0.5) * 3); // Looking up, slight movement
+        targetTorso = -15 + Math.sin(holdPhase) * 2;
+        setLeftLegAngle(Math.sin(holdPhase) * 3);
+        setRightLegAngle(-Math.sin(holdPhase) * 3);
+        setLegOffset(0);
+        targetFlap = 20 + Math.sin(holdPhase) * 5; // Coat dramatic flutter
+      } else {
+        // Return to neutral
+        const p = (cycle - 0.7) / 0.3;
+        setLeftArmAngle(90 - p * 80);
+        setRightArmAngle(-90 + p * 80);
+        setHeadTilt(15 - p * 15);
+        targetTorso = -15 + p * 15;
+        setLeftLegAngle(0);
+        setRightLegAngle(0);
+        setLegOffset(0);
+        targetFlap = 20 - p * 15;
+      }
+      
+      setHipsSway(0);
+      setRootX(0);
+      setRootY(0);
     }
 
     setTorsoAngle(targetTorso);
@@ -884,6 +927,7 @@ const QbitAnimator = () => {
             <AnimationButton type="winning" label="Winning" />
             <AnimationButton type="ophelia" label="Fate of Ophelia" />
             <AnimationButton type="poop" label="Poop" />
+            <AnimationButton type="srk" label="SRK Pose" />
           </div>
           <div className="flex gap-2 mt-2">
              <button 
