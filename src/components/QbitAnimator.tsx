@@ -183,40 +183,78 @@ const QbitAnimator = () => {
       targetTorso = phase * 10;
       targetFlap = 10 + Math.abs(phase) * 5;
     } else if (animationType === 'cartwheel') {
-      const cwSpeed = t * 0.3;
-      const rotation = (cwSpeed % (Math.PI * 2));
-      const rotationDeg = (rotation * 180 / Math.PI);
+      const cwSpeed = t * 0.5;
+      const phase = (cwSpeed % (Math.PI * 2)) / (Math.PI * 2); // 0-1 progress
       
-      setBodyRotation(rotationDeg);
+      // Pivot points on the ground (X positions where limbs contact)
+      const startX = -80;
+      const leftHandX = -40;
+      const rightHandX = 40;
+      const endX = 80;
       
-      // Continuous lateral movement
-      const lateralProgress = (cwSpeed / (Math.PI * 2)) % 1;
-      setRootX(-100 + lateralProgress * 200);
-      
-      // Height - highest when inverted (90°)
-      const yOffset = Math.sin(rotation) * 60;
-      setRootY(Math.max(0, yOffset));
-      
-      // Arms reach toward ground during inverted phase
-      const armPhase = Math.sin(rotation);
-      setLeftArmAngle(-90 - armPhase * 70);
-      setRightArmAngle(-90 - armPhase * 70);
-      
-      // Legs spread wide during inverted phase
-      const legSpread = Math.abs(Math.sin(rotation)) * 50;
-      setLeftLegAngle(-legSpread);
-      setRightLegAngle(legSpread);
-      
-      // Head counter-rotation
-      setHeadTilt(-rotationDeg * 0.3);
-      
-      // Coat flaps when inverted
-      targetFlap = Math.abs(Math.sin(rotation)) * 15;
-      
-      // Hand contact shadow - visible when hands near ground (60°-120°)
-      const handContact = Math.sin(rotation);
-      setHandContactOpacity(handContact > 0.5 ? (handContact - 0.5) * 2 : 0);
-      setHandContactX(200 + rootX);
+      if (phase < 0.2) {
+        // Phase 0: Approach - leaning, reaching with first hand
+        const p = phase / 0.2;
+        setRootX(startX + p * (leftHandX - startX));
+        setRootY(0);
+        setBodyRotation(p * 45); // Start tilting
+        setLeftArmAngle(-90 - p * 80); // Left arm reaches down
+        setRightArmAngle(-20 + p * 30); // Right arm starts going up
+        setLeftLegAngle(p * 20);
+        setRightLegAngle(-p * 10);
+        setHeadTilt(-p * 15);
+        targetFlap = p * 5;
+        setHandContactOpacity(0);
+        
+      } else if (phase < 0.45) {
+        // Phase 1: First Hand (left) Pivot - rotating around left hand
+        const p = (phase - 0.2) / 0.25;
+        // Pivot around left hand position
+        setRootX(leftHandX + p * (rightHandX - leftHandX) * 0.5);
+        setRootY(-Math.sin(p * Math.PI) * 80); // Arc up
+        setBodyRotation(45 + p * 90); // 45° to 135°
+        setLeftArmAngle(-170); // Left arm planted
+        setRightArmAngle(-90 - p * 60); // Right arm reaching for ground
+        setLeftLegAngle(30 + p * 40); // Legs spread wide going up
+        setRightLegAngle(-30 - p * 40);
+        setHeadTilt(-45 - p * 45);
+        targetFlap = 10 + p * 5;
+        // Show left hand contact shadow
+        setHandContactOpacity(1 - p * 0.3);
+        setHandContactX(200 + leftHandX);
+        
+      } else if (phase < 0.7) {
+        // Phase 2: Second Hand (right) Pivot - rotating around right hand
+        const p = (phase - 0.45) / 0.25;
+        // Pivot around right hand position
+        setRootX(leftHandX + (rightHandX - leftHandX) * 0.5 + p * (rightHandX - leftHandX) * 0.5);
+        setRootY(-Math.sin((1 - p) * Math.PI) * 80); // Arc down
+        setBodyRotation(135 + p * 90); // 135° to 225°
+        setLeftArmAngle(-160 + p * 60); // Left arm lifting off
+        setRightArmAngle(-170); // Right arm planted
+        setLeftLegAngle(70 - p * 30); // Legs coming down
+        setRightLegAngle(-70 + p * 30);
+        setHeadTilt(-90 - p * 45);
+        targetFlap = 15 - p * 5;
+        // Show right hand contact shadow
+        setHandContactOpacity(0.7 + p * 0.3);
+        setHandContactX(200 + rightHandX);
+        
+      } else {
+        // Phase 3: Landing - legs come down sequentially
+        const p = (phase - 0.7) / 0.3;
+        setRootX(rightHandX + p * (endX - rightHandX));
+        setRootY(0);
+        setBodyRotation(225 + p * 135); // Complete the rotation to 360°
+        setLeftArmAngle(-100 + p * 100); // Arms return to normal
+        setRightArmAngle(-100 + p * 100);
+        setLeftLegAngle(40 - p * 40); // Legs come together
+        setRightLegAngle(-40 + p * 40);
+        setHeadTilt(-135 + p * 135); // Head returns
+        targetFlap = 10 - p * 10;
+        setHandContactOpacity(Math.max(0, 1 - p * 3));
+        setHandContactX(200 + rightHandX);
+      }
     } else if (animationType === 'ophelia') {
       const slowT = t * 0.8;
       const sway = Math.sin(slowT);
@@ -793,6 +831,8 @@ const QbitAnimator = () => {
                   </feMerge>
                 </filter>
               </defs>
+              {/* Ground line */}
+              <line x1="0" y1="380" x2="400" y2="380" stroke="hsl(var(--muted-foreground))" strokeWidth="2" strokeOpacity="0.3" />
               <Shadow />
               {handContactOpacity > 0 && (
                 <ellipse 
