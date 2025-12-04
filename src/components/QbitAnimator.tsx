@@ -192,11 +192,15 @@ const QbitAnimator = () => {
       const rightHandX = 40;
       const endX = 80;
       
+      // Character needs to arc HIGH enough when inverted to stay above ground
+      // Since rotation is around y=370, and character is ~160px tall, 
+      // we need ~160px elevation when fully inverted
+      
       if (phase < 0.2) {
         // Phase 0: Approach - leaning, reaching with first hand
         const p = phase / 0.2;
         setRootX(startX + p * (leftHandX - startX));
-        setRootY(0);
+        setRootY(-p * 40); // Start lifting
         setBodyRotation(p * 45); // Start tilting
         setLeftArmAngle(-90 - p * 80); // Left arm reaches down
         setRightArmAngle(-20 + p * 30); // Right arm starts going up
@@ -204,14 +208,15 @@ const QbitAnimator = () => {
         setRightLegAngle(-p * 10);
         setHeadTilt(-p * 15);
         targetFlap = p * 5;
-        setHandContactOpacity(0);
+        setHandContactOpacity(p > 0.8 ? (p - 0.8) * 5 : 0);
+        setHandContactX(200 + leftHandX);
         
       } else if (phase < 0.45) {
         // Phase 1: First Hand (left) Pivot - rotating around left hand
         const p = (phase - 0.2) / 0.25;
-        // Pivot around left hand position
         setRootX(leftHandX + p * (rightHandX - leftHandX) * 0.5);
-        setRootY(-Math.sin(p * Math.PI) * 80); // Arc up
+        // High arc to keep body above ground when inverted
+        setRootY(-40 - Math.sin(p * Math.PI) * 140); // Peak at -180
         setBodyRotation(45 + p * 90); // 45° to 135°
         setLeftArmAngle(-170); // Left arm planted
         setRightArmAngle(-90 - p * 60); // Right arm reaching for ground
@@ -219,16 +224,15 @@ const QbitAnimator = () => {
         setRightLegAngle(-30 - p * 40);
         setHeadTilt(-45 - p * 45);
         targetFlap = 10 + p * 5;
-        // Show left hand contact shadow
-        setHandContactOpacity(1 - p * 0.3);
+        setHandContactOpacity(1);
         setHandContactX(200 + leftHandX);
         
       } else if (phase < 0.7) {
         // Phase 2: Second Hand (right) Pivot - rotating around right hand
         const p = (phase - 0.45) / 0.25;
-        // Pivot around right hand position
         setRootX(leftHandX + (rightHandX - leftHandX) * 0.5 + p * (rightHandX - leftHandX) * 0.5);
-        setRootY(-Math.sin((1 - p) * Math.PI) * 80); // Arc down
+        // Continue high arc, descending
+        setRootY(-40 - Math.sin((1 - p) * Math.PI) * 140); // Coming down from -180
         setBodyRotation(135 + p * 90); // 135° to 225°
         setLeftArmAngle(-160 + p * 60); // Left arm lifting off
         setRightArmAngle(-170); // Right arm planted
@@ -236,15 +240,14 @@ const QbitAnimator = () => {
         setRightLegAngle(-70 + p * 30);
         setHeadTilt(-90 - p * 45);
         targetFlap = 15 - p * 5;
-        // Show right hand contact shadow
-        setHandContactOpacity(0.7 + p * 0.3);
+        setHandContactOpacity(1);
         setHandContactX(200 + rightHandX);
         
       } else {
         // Phase 3: Landing - legs come down sequentially
         const p = (phase - 0.7) / 0.3;
         setRootX(rightHandX + p * (endX - rightHandX));
-        setRootY(0);
+        setRootY(-40 * (1 - p)); // Settle back to ground
         setBodyRotation(225 + p * 135); // Complete the rotation to 360°
         setLeftArmAngle(-100 + p * 100); // Arms return to normal
         setRightArmAngle(-100 + p * 100);
@@ -252,7 +255,7 @@ const QbitAnimator = () => {
         setRightLegAngle(-40 + p * 40);
         setHeadTilt(-135 + p * 135); // Head returns
         targetFlap = 10 - p * 10;
-        setHandContactOpacity(Math.max(0, 1 - p * 3));
+        setHandContactOpacity(Math.max(0, 1 - p * 2));
         setHandContactX(200 + rightHandX);
       }
     } else if (animationType === 'ophelia') {
