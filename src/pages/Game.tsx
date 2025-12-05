@@ -177,6 +177,9 @@ const Game: React.FC = () => {
     enemySpawnTimer: number;
     speedCoinSpawnTimer: number;
     sinkSpawnTimer: number;
+    nextSpeedCoinSpawnTime: number;
+    nextSinkSpawnTime: number;
+    collectiblesInitialized: boolean;
     speedBoostApplied: boolean;
     speedBoostActive: boolean;
     speedBoostEndTime: number;
@@ -492,6 +495,9 @@ const Game: React.FC = () => {
       game.playerSinkInventory = 0;
       game.speedCoinSpawnTimer = 0;
       game.sinkSpawnTimer = 0;
+      game.nextSpeedCoinSpawnTime = 20 + Math.random() * 10;
+      game.nextSinkSpawnTime = 25 + Math.random() * 10;
+      game.collectiblesInitialized = false;
       game.player.speed = BASE_PLAYER_SPEED;
     }
   };
@@ -590,6 +596,9 @@ const Game: React.FC = () => {
       enemySpawnTimer: 0,
       speedCoinSpawnTimer: 0,
       sinkSpawnTimer: 0,
+      nextSpeedCoinSpawnTime: 20 + Math.random() * 10,
+      nextSinkSpawnTime: 25 + Math.random() * 10,
+      collectiblesInitialized: false,
       speedBoostApplied: false,
       speedBoostActive: false,
       speedBoostEndTime: 0,
@@ -1102,11 +1111,25 @@ const Game: React.FC = () => {
         setSpeedBoostTimeLeft(Math.max(0, game.speedBoostEndTime - game.gameTime));
       }
 
-      // Spawn speed boost coins after 60 seconds (quadrant system)
+      // Spawn speed boost coins and sinks after 30 seconds
       if (game.gameTime >= COLLECTIBLES_START_TIME) {
+        // First time crossing threshold - spawn initial batch immediately
+        if (!game.collectiblesInitialized) {
+          game.collectiblesInitialized = true;
+          // Spawn initial speed boost coins in all quadrants
+          for (let q = 0; q < 4; q++) {
+            spawnSpeedBoostCoinInQuadrant(q);
+          }
+          // Spawn initial sink
+          spawnSinkCollectible();
+          showStatus('⚡ POWER-UPS NOW AVAILABLE!', '#00ff00', 2000);
+        }
+        
+        // Regular spawn timer for speed boost coins
         game.speedCoinSpawnTimer += dt;
-        if (game.speedCoinSpawnTimer >= 20 + Math.random() * 10) {
+        if (game.speedCoinSpawnTimer >= game.nextSpeedCoinSpawnTime) {
           game.speedCoinSpawnTimer = 0;
+          game.nextSpeedCoinSpawnTime = 20 + Math.random() * 10; // Set next spawn time
           
           // Count coins per quadrant
           const quadrantCounts = [0, 0, 0, 0];
@@ -1122,10 +1145,11 @@ const Game: React.FC = () => {
           }
         }
         
-        // Spawn sink collectibles after 60 seconds
+        // Regular spawn timer for sink collectibles
         game.sinkSpawnTimer += dt;
-        if (game.sinkSpawnTimer >= 25 + Math.random() * 10) {
+        if (game.sinkSpawnTimer >= game.nextSinkSpawnTime) {
           game.sinkSpawnTimer = 0;
+          game.nextSinkSpawnTime = 25 + Math.random() * 10; // Set next spawn time
           spawnSinkCollectible();
         }
       }
