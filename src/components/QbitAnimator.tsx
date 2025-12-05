@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, RefreshCw, Move, Layers, Circle, Square, Save, Trash2, Camera, Download } from 'lucide-react';
+import { Play, Pause, RefreshCw, Move, Layers, Circle, Square, Save, Trash2, Camera, Download, Video } from 'lucide-react';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 
 // Color Palette based on the Qbit character
 const COLORS = {
@@ -85,6 +87,16 @@ const QbitAnimator = () => {
   const customAnimationRef = useRef<number>();
   const svgRef = useRef<SVGSVGElement>(null);
 
+  // Video recording state
+  const [isRecordingVideo, setIsRecordingVideo] = useState(false);
+  const [isEncodingVideo, setIsEncodingVideo] = useState(false);
+  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+  const [videoRecordingProgress, setVideoRecordingProgress] = useState(0);
+  const ffmpegRef = useRef<FFmpeg | null>(null);
+  const videoFramesRef = useRef<string[]>([]);
+  const videoRecordingRef = useRef<number>();
+  const isRecordingVideoRef = useRef(false);
+
   // Snapshot download function
   const downloadSnapshot = () => {
     if (!svgRef.current) return;
@@ -122,7 +134,172 @@ const QbitAnimator = () => {
     img.src = url;
   };
 
-  // --- Animation Loop ---
+  // Load FFmpeg
+  const loadFFmpeg = async () => {
+    if (ffmpegRef.current) return;
+    
+    const ffmpeg = new FFmpeg();
+    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+    
+    await ffmpeg.load({
+      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+    });
+    
+    ffmpegRef.current = ffmpeg;
+    setFfmpegLoaded(true);
+  };
+
+  // Capture a single frame
+  const captureFrame = (): Promise<string> => {
+    return new Promise((resolve) => {
+      if (!svgRef.current) {
+        resolve('');
+        return;
+      }
+      
+      const svg = svgRef.current;
+      const serializer = new XMLSerializer();
+      const svgString = serializer.serializeToString(svg);
+      
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 400;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve('');
+        return;
+      }
+      
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fillRect(0, 0, 400, 400);
+      
+      const img = new Image();
+      const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(svgBlob);
+      
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, 400, 400);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      
+      img.src = url;
+    });
+  };
+
+  // Start video recording
+  const startVideoRecording = async () => {
+    if (!ffmpegLoaded) {
+      setIsEncodingVideo(true);
+      await loadFFmpeg();
+      setIsEncodingVideo(false);
+    }
+    
+    videoFramesRef.current = [];
+    isRecordingVideoRef.current = true;
+    setIsRecordingVideo(true);
+    setVideoRecordingProgress(0);
+    
+    let frameCount = 0;
+    const maxFrames = 300; // ~10 seconds at 30fps
+    const captureInterval = 1000 / 30; // 30fps capture
+    
+    const recordFrame = async () => {
+      if (frameCount >= maxFrames || !isRecordingVideoRef.current) {
+        if (frameCount >= maxFrames) {
+          stopVideoRecording();
+        }
+        return;
+      }
+      
+      const frame = await captureFrame();
+      if (frame) {
+        videoFramesRef.current.push(frame);
+        frameCount++;
+        setVideoRecordingProgress((frameCount / maxFrames) * 100);
+      }
+      
+      videoRecordingRef.current = window.setTimeout(recordFrame, captureInterval);
+    };
+    
+    recordFrame();
+  };
+
+  // Stop video recording and encode
+  const stopVideoRecording = async () => {
+    isRecordingVideoRef.current = false;
+    setIsRecordingVideo(false);
+    if (videoRecordingRef.current) {
+      clearTimeout(videoRecordingRef.current);
+    }
+    
+    if (videoFramesRef.current.length < 10) {
+      alert('Not enough frames captured. Please record for longer.');
+      return;
+    }
+    
+    setIsEncodingVideo(true);
+    
+    try {
+      const ffmpeg = ffmpegRef.current;
+      if (!ffmpeg) {
+        throw new Error('FFmpeg not loaded');
+      }
+      
+      // Write frames to FFmpeg virtual filesystem
+      for (let i = 0; i < videoFramesRef.current.length; i++) {
+        const frameData = videoFramesRef.current[i];
+        const base64Data = frameData.split(',')[1];
+        const binaryString = atob(base64Data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let j = 0; j < binaryString.length; j++) {
+          bytes[j] = binaryString.charCodeAt(j);
+        }
+        await ffmpeg.writeFile(`frame${i.toString().padStart(4, '0')}.png`, bytes);
+      }
+      
+      // Encode to MP4
+      await ffmpeg.exec([
+        '-framerate', '30',
+        '-i', 'frame%04d.png',
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-preset', 'fast',
+        'output.mp4'
+      ]);
+      
+      // Read the output file
+      const data = await ffmpeg.readFile('output.mp4');
+      // Handle type conversion for Blob
+      const uint8Array = data as Uint8Array;
+      const arrayBuffer = uint8Array.buffer.slice(uint8Array.byteOffset, uint8Array.byteOffset + uint8Array.byteLength) as ArrayBuffer;
+      const blob = new Blob([arrayBuffer], { type: 'video/mp4' });
+      const url = URL.createObjectURL(blob);
+      
+      // Download
+      const link = document.createElement('a');
+      link.download = `qbit-animation-${Date.now()}.mp4`;
+      link.href = url;
+      link.click();
+      
+      URL.revokeObjectURL(url);
+      
+      // Cleanup
+      for (let i = 0; i < videoFramesRef.current.length; i++) {
+        await ffmpeg.deleteFile(`frame${i.toString().padStart(4, '0')}.png`);
+      }
+      await ffmpeg.deleteFile('output.mp4');
+      
+    } catch (error) {
+      console.error('Video encoding failed:', error);
+      alert('Video encoding failed. Please try again.');
+    }
+    
+    setIsEncodingVideo(false);
+    videoFramesRef.current = [];
+    setVideoRecordingProgress(0);
+  };
   const animate = (time: number) => {
     if (!isPlaying) return;
     
@@ -864,6 +1041,34 @@ const QbitAnimator = () => {
           <Camera size={16} />
           <Download size={14} />
         </button>
+        
+        {/* Video Recording Button */}
+        <div className="absolute top-4 right-24 flex items-center gap-2">
+          {isEncodingVideo ? (
+            <div className="p-2 rounded-lg bg-secondary/80 text-secondary-foreground flex items-center gap-2 text-sm">
+              <RefreshCw size={16} className="animate-spin" />
+              <span>Encoding...</span>
+            </div>
+          ) : isRecordingVideo ? (
+            <button
+              onClick={stopVideoRecording}
+              className="p-2 rounded-lg bg-destructive hover:bg-destructive/80 text-destructive-foreground transition-all flex items-center gap-2 text-sm animate-pulse"
+              title="Stop Recording"
+            >
+              <Square size={14} className="fill-current" />
+              <span>{Math.round(videoRecordingProgress)}%</span>
+            </button>
+          ) : (
+            <button
+              onClick={startVideoRecording}
+              className="p-2 rounded-lg bg-secondary/80 hover:bg-secondary text-secondary-foreground transition-all flex items-center gap-2 text-sm"
+              title="Record MP4 Video"
+            >
+              <Video size={16} />
+              <Circle size={12} className="text-destructive fill-destructive" />
+            </button>
+          )}
+        </div>
 
         {/* The SVG Rig */}
         <div className="character-stage">
