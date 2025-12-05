@@ -126,6 +126,7 @@ const Game: React.FC = () => {
   // Game state management
   const [gameState, setGameState] = useState<GameState>('name-entry');
   const [playerName, setPlayerName] = useState('');
+  const playerNameRef = useRef(''); // Ref to avoid stale closure
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [finalStats, setFinalStats] = useState({ time: 0, coins: 0 });
@@ -311,6 +312,7 @@ const Game: React.FC = () => {
 
   const startGame = () => {
     if (!playerName.trim()) return;
+    playerNameRef.current = playerName.trim(); // Store name in ref
     setGameState('playing');
     setCoinsCollected(0);
     setGameTime(0);
@@ -358,7 +360,11 @@ const Game: React.FC = () => {
     const coins = coinsCollected;
     
     setFinalStats({ time, coins });
-    saveToLeaderboard(playerName, time, coins);
+    // Use ref to get current name (avoid stale closure)
+    const nameToSave = playerNameRef.current || playerName;
+    if (nameToSave.trim()) {
+      saveToLeaderboard(nameToSave, time, coins);
+    }
     setGameState('game-over');
     gameRef.current.isPlaying = false;
   };
@@ -626,30 +632,32 @@ const Game: React.FC = () => {
       }
     };
 
-    const spawnCoin = () => {
+    const spawnCoin = (forceSpawn = false) => {
       if (game.coins.filter(c => !c.collected).length >= 20) return;
       
       let attempts = 0;
-      while (attempts < 50) {
+      while (attempts < 100) {
         attempts++;
         const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
         const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
         
-        if (game.map.tiles[ry][rx] === 0) {
+        if (game.map.tiles[ry]?.[rx] === 0) {
           const cx = rx * TILE_SIZE + TILE_SIZE / 2;
           const cy = ry * TILE_SIZE + TILE_SIZE / 2;
           
-          // Don't spawn too close to player
-          const d = Math.hypot(cx - game.player.x, cy - game.player.y);
-          if (d > 200) {
-            game.coins.push({
-              x: cx,
-              y: cy,
-              collected: false,
-              spawnTime: Date.now() * 0.001,
-            });
-            return;
+          // During gameplay, don't spawn too close to player
+          if (!forceSpawn) {
+            const d = Math.hypot(cx - game.player.x, cy - game.player.y);
+            if (d < 200) continue;
           }
+          
+          game.coins.push({
+            x: cx,
+            y: cy,
+            collected: false,
+            spawnTime: Date.now() * 0.001,
+          });
+          return;
         }
       }
     };
@@ -676,9 +684,9 @@ const Game: React.FC = () => {
         spawnEnemy();
       }
       
-      // Spawn initial coins
+      // Spawn initial coins (force spawn to ignore player distance)
       for (let i = 0; i < 8; i++) {
-        spawnCoin();
+        spawnCoin(true);
       }
 
       game.camera.x = game.player.x - canvas.width / 2;
@@ -1511,21 +1519,18 @@ const Game: React.FC = () => {
         if (valid) game.enemies.push({ x: ex, y: ey, width: 24, height: 24, speed: BASE_ENEMY_SPEED + Math.random() * 30, trail: [], stuckTime: 0, flankTimer: 0, flankDir: { x: 0, y: 0 } });
       }
       
-      // Spawn initial coins
+      // Spawn initial coins (with forceSpawn to ignore distance check)
       for (let i = 0; i < 8; i++) {
         let attempts = 0;
-        while (attempts < 50) {
+        while (attempts < 100) {
           attempts++;
           const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
           const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
-          if (game.map.tiles[ry][rx] === 0) {
+          if (game.map.tiles[ry]?.[rx] === 0) {
             const cx = rx * TILE_SIZE + TILE_SIZE / 2;
             const cy = ry * TILE_SIZE + TILE_SIZE / 2;
-            const d = Math.hypot(cx - game.player.x, cy - game.player.y);
-            if (d > 200) {
-              game.coins.push({ x: cx, y: cy, collected: false, spawnTime: Date.now() * 0.001 });
-              break;
-            }
+            game.coins.push({ x: cx, y: cy, collected: false, spawnTime: Date.now() * 0.001 });
+            break;
           }
         }
       }
