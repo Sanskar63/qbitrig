@@ -147,6 +147,7 @@ const Game: React.FC = () => {
   const [speedBoostTimeLeft, setSpeedBoostTimeLeft] = useState(0);
   const [energy, setEnergy] = useState(0);
   const [gameTime, setGameTime] = useState(0);
+  const [screenFlash, setScreenFlash] = useState<{ color: string; opacity: number } | null>(null);
   
   // Game state management
   const [gameState, setGameState] = useState<GameState>('name-entry');
@@ -243,7 +244,7 @@ const Game: React.FC = () => {
     setTimeout(() => setStatus(''), duration);
   };
 
-  // Draw speed boost coin with electric effect
+  // Draw speed boost coin - Lightning bolt icon
   const drawSpeedBoostCoin = (ctx: CanvasRenderingContext2D, coin: SpeedBoostCoin) => {
     const time = Date.now() * 0.005 + coin.spawnTime;
     const pulse = 0.8 + Math.sin(time * 3) * 0.2;
@@ -252,51 +253,56 @@ const Game: React.FC = () => {
     ctx.save();
     ctx.translate(coin.x, coin.y + bob);
     
-    // Electric glow
+    // Electric glow effect
     ctx.shadowColor = '#00ffff';
-    ctx.shadowBlur = 25 * pulse;
+    ctx.shadowBlur = 30 * pulse;
     
-    // Outer ring
-    ctx.fillStyle = '#00ccff';
+    // Outer glowing circle
+    const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 20 * pulse);
+    gradient.addColorStop(0, 'rgba(0, 255, 255, 0.9)');
+    gradient.addColorStop(0.5, 'rgba(0, 200, 255, 0.6)');
+    gradient.addColorStop(1, 'rgba(0, 100, 255, 0)');
+    ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.arc(0, 0, 14 * pulse, 0, Math.PI * 2);
+    ctx.arc(0, 0, 20 * pulse, 0, Math.PI * 2);
     ctx.fill();
     
-    // Inner ring
+    // Core circle
     ctx.shadowBlur = 0;
-    ctx.fillStyle = '#0088cc';
+    ctx.fillStyle = '#001133';
     ctx.beginPath();
-    ctx.arc(0, 0, 10, 0, Math.PI * 2);
+    ctx.arc(0, 0, 12, 0, Math.PI * 2);
     ctx.fill();
     
-    // Lightning bolt
-    ctx.fillStyle = '#ffffff';
+    // Lightning bolt - larger and more prominent
+    ctx.fillStyle = '#ffff00';
+    ctx.shadowColor = '#ffff00';
+    ctx.shadowBlur = 10;
     ctx.beginPath();
-    ctx.moveTo(-3, -8);
-    ctx.lineTo(2, -2);
-    ctx.lineTo(-1, -2);
-    ctx.lineTo(3, 8);
-    ctx.lineTo(-2, 1);
-    ctx.lineTo(1, 1);
+    ctx.moveTo(-4, -10);
+    ctx.lineTo(3, -3);
+    ctx.lineTo(-1, -3);
+    ctx.lineTo(4, 10);
+    ctx.lineTo(-3, 2);
+    ctx.lineTo(1, 2);
     ctx.closePath();
     ctx.fill();
     
-    // Sparkles
-    ctx.fillStyle = '#ffffff';
-    for (let i = 0; i < 4; i++) {
-      const angle = time * 2 + (i * Math.PI / 2);
-      const dist = 18 + Math.sin(time * 4 + i) * 3;
-      const sx = Math.cos(angle) * dist;
-      const sy = Math.sin(angle) * dist;
+    // Electric arcs around
+    ctx.strokeStyle = '#00ffff';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 3; i++) {
+      const angle = time * 3 + (i * Math.PI * 2 / 3);
+      const dist = 16;
       ctx.beginPath();
-      ctx.arc(sx, sy, 2, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.arc(Math.cos(angle) * dist, Math.sin(angle) * dist, 3, 0, Math.PI * 2);
+      ctx.stroke();
     }
     
     ctx.restore();
   };
 
-  // Draw sink collectible
+  // Draw sink collectible - Blackhole vortex icon
   const drawSinkCollectible = (ctx: CanvasRenderingContext2D, sink: SinkCollectible) => {
     const time = Date.now() * 0.004 + sink.spawnTime;
     const pulse = 0.9 + Math.sin(time * 2) * 0.1;
@@ -305,43 +311,59 @@ const Game: React.FC = () => {
     ctx.save();
     ctx.translate(sink.x, sink.y + bob);
     
-    // Glow
-    ctx.shadowColor = '#ff6600';
-    ctx.shadowBlur = 20 * pulse;
+    // Outer vortex glow
+    ctx.shadowColor = '#9900ff';
+    ctx.shadowBlur = 25 * pulse;
     
-    // Outer hexagon
-    ctx.fillStyle = '#ff4400';
-    ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const angle = (i / 6) * Math.PI * 2 - Math.PI / 2;
-      const x = Math.cos(angle) * 14 * pulse;
-      const y = Math.sin(angle) * 14 * pulse;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    // Swirling vortex rings
+    for (let ring = 3; ring >= 0; ring--) {
+      const ringRadius = 6 + ring * 5;
+      const ringAngle = time * (2 + ring * 0.5);
+      const alpha = 0.3 + (3 - ring) * 0.2;
+      
+      ctx.strokeStyle = `rgba(150, 0, 255, ${alpha})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringRadius * pulse, ringAngle, ringAngle + Math.PI * 1.5);
+      ctx.stroke();
     }
-    ctx.closePath();
-    ctx.fill();
     
-    // Inner circle (hole)
+    // Black hole center
     ctx.shadowBlur = 0;
-    ctx.fillStyle = '#220000';
+    const centerGradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 10);
+    centerGradient.addColorStop(0, '#000000');
+    centerGradient.addColorStop(0.7, '#220033');
+    centerGradient.addColorStop(1, '#440066');
+    ctx.fillStyle = centerGradient;
     ctx.beginPath();
-    ctx.arc(0, 0, 8, 0, Math.PI * 2);
+    ctx.arc(0, 0, 10, 0, Math.PI * 2);
     ctx.fill();
     
-    // Spiral inside
-    ctx.strokeStyle = '#ff8800';
+    // Inner swirl
+    ctx.strokeStyle = '#cc00ff';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    for (let i = 0; i < 20; i++) {
-      const angle = (i / 20) * Math.PI * 4 + time * 3;
-      const r = (i / 20) * 6;
+    for (let i = 0; i < 30; i++) {
+      const angle = (i / 30) * Math.PI * 3 + time * 4;
+      const r = (i / 30) * 8;
       const x = Math.cos(angle) * r;
       const y = Math.sin(angle) * r;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
+    
+    // Particles being sucked in
+    ctx.fillStyle = '#ff00ff';
+    for (let i = 0; i < 4; i++) {
+      const angle = time * 2 + (i * Math.PI / 2);
+      const dist = 20 + Math.sin(time * 5 + i) * 5;
+      const px = Math.cos(angle) * dist;
+      const py = Math.sin(angle) * dist;
+      ctx.beginPath();
+      ctx.arc(px, py, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
     
     ctx.restore();
   };
@@ -895,6 +917,9 @@ const Game: React.FC = () => {
       game.enemySpawnTimer = 0;
       game.speedCoinSpawnTimer = 0;
       game.sinkSpawnTimer = 0;
+      game.nextSpeedCoinSpawnTime = 20 + Math.random() * 10;
+      game.nextSinkSpawnTime = 25 + Math.random() * 10;
+      game.collectiblesInitialized = false;
       game.speedBoostApplied = false;
       game.speedBoostActive = false;
       game.speedBoostEndTime = 0;
@@ -1113,7 +1138,7 @@ const Game: React.FC = () => {
 
       // Spawn speed boost coins and sinks after 30 seconds
       if (game.gameTime >= COLLECTIBLES_START_TIME) {
-        // First time crossing threshold - spawn initial batch immediately
+        // First time crossing threshold - spawn initial batch immediately with screen flash
         if (!game.collectiblesInitialized) {
           game.collectiblesInitialized = true;
           // Spawn initial speed boost coins in all quadrants
@@ -1123,6 +1148,10 @@ const Game: React.FC = () => {
           // Spawn initial sink
           spawnSinkCollectible();
           showStatus('⚡ POWER-UPS NOW AVAILABLE!', '#00ff00', 2000);
+          
+          // Screen flash effect
+          setScreenFlash({ color: '#00ff00', opacity: 0.4 });
+          setTimeout(() => setScreenFlash(null), 300);
         }
         
         // Regular spawn timer for speed boost coins
@@ -1874,6 +1903,16 @@ const Game: React.FC = () => {
     <div className="relative w-full h-screen bg-background overflow-hidden">
       <canvas ref={canvasRef} className="block" />
       
+      {/* Screen flash overlay */}
+      {screenFlash && (
+        <div 
+          className="absolute inset-0 pointer-events-none z-40 transition-opacity duration-300"
+          style={{ 
+            backgroundColor: screenFlash.color, 
+            opacity: screenFlash.opacity 
+          }}
+        />
+      )}
       {/* Name Entry Screen */}
       {gameState === 'name-entry' && (
         <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50">
