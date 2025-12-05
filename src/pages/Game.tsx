@@ -517,6 +517,7 @@ const Game: React.FC = () => {
       const canvas = canvasRef.current;
       if (!canvas) return;
       
+      gameRef.current.keys = {}; // Reset stuck keys
       gameRef.current.isPlaying = true;
       gameRef.current.gameTime = 0;
       gameRef.current.speedBoostApplied = false;
@@ -1705,6 +1706,7 @@ const Game: React.FC = () => {
       if (!canvas) return;
       
       const game = gameRef.current;
+      game.keys = {}; // Reset stuck keys
       game.map.tiles = [];
       game.map.buildings = [];
       game.map.trees = [];
