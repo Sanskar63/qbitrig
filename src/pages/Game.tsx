@@ -121,6 +121,7 @@ const Game: React.FC = () => {
   const [statusColor, setStatusColor] = useState('#fff');
   const [energy, setEnergy] = useState(0);
   const [coinsCollected, setCoinsCollected] = useState(0);
+  const coinsCollectedRef = useRef(0); // Ref to avoid stale closure
   const [gameTime, setGameTime] = useState(0);
   
   // Game state management
@@ -315,6 +316,7 @@ const Game: React.FC = () => {
     playerNameRef.current = playerName.trim(); // Store name in ref
     setGameState('playing');
     setCoinsCollected(0);
+    coinsCollectedRef.current = 0;
     setGameTime(0);
     
     // Remove focus from input/button so keyboard events work
@@ -357,7 +359,7 @@ const Game: React.FC = () => {
     if (!gameRef.current) return;
     
     const time = gameRef.current.gameTime;
-    const coins = coinsCollected;
+    const coins = coinsCollectedRef.current; // Use ref to avoid stale closure
     
     setFinalStats({ time, coins });
     // Use ref to get current name (avoid stale closure)
@@ -372,6 +374,7 @@ const Game: React.FC = () => {
   const handlePlayAgain = () => {
     setGameState('playing');
     setCoinsCollected(0);
+    coinsCollectedRef.current = 0;
     
     if (gameRef.current) {
       const canvas = canvasRef.current;
@@ -923,7 +926,11 @@ const Game: React.FC = () => {
         const d = Math.hypot(game.player.x - coin.x, game.player.y - coin.y);
         if (d < 30) {
           coin.collected = true;
-          setCoinsCollected(prev => prev + 1);
+          setCoinsCollected(prev => {
+            const newVal = prev + 1;
+            coinsCollectedRef.current = newVal;
+            return newVal;
+          });
         }
       });
       
