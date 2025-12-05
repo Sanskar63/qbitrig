@@ -1024,8 +1024,11 @@ const Game: React.FC = () => {
         return;
       }
       
-      // Spawn portal 25px in front of player (very close)
-      const spawnDist = 25;
+      // Clear any existing portals - only one portal allowed
+      game.map.portals = [];
+      
+      // Spawn portal 1 second ahead of player based on current speed
+      const spawnDist = game.player.speed * 1;
       const px = game.player.x + game.player.dirX * spawnDist;
       const py = game.player.y + game.player.dirY * spawnDist;
 
