@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Trophy, X } from 'lucide-react';
 
 const TILE_SIZE = 64;
 const MAP_WIDTH = 50;
@@ -8,6 +8,8 @@ const MAP_HEIGHT = 50;
 const PERSPECTIVE_STRENGTH = 0.4;
 const ENERGY_MAX = 100;
 const ENERGY_GAIN_PER_PIXEL = 0.05;
+const BASE_PLAYER_SPEED = 300;
+const BASE_ENEMY_SPEED = 250;
 
 // Colors
 const C_ROAD = '#2a2a2a';
@@ -90,16 +92,48 @@ interface Tree {
   r: number;
 }
 
+interface Coin {
+  x: number;
+  y: number;
+  collected: boolean;
+  spawnTime: number;
+}
+
+interface LeaderboardEntry {
+  name: string;
+  timeSurvived: number;
+  coinsCollected: number;
+  date: string;
+}
+
+type GameState = 'name-entry' | 'playing' | 'game-over';
+
+const formatTime = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+
 const Game: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState('');
   const [statusColor, setStatusColor] = useState('#fff');
   const [energy, setEnergy] = useState(0);
+  const [coinsCollected, setCoinsCollected] = useState(0);
+  
+  // Game state management
+  const [gameState, setGameState] = useState<GameState>('name-entry');
+  const [playerName, setPlayerName] = useState('');
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [finalStats, setFinalStats] = useState({ time: 0, coins: 0 });
+  
   const gameRef = useRef<{
     player: Player;
     enemies: Enemy[];
     boats: Boat[];
+    coins: Coin[];
     map: {
       width: number;
       height: number;
@@ -112,14 +146,86 @@ const Game: React.FC = () => {
     keys: Record<string, boolean>;
     gameTime: number;
     enemySpawnTimer: number;
+    coinSpawnTimer: number;
+    speedBoostApplied: boolean;
     lastTime: number;
     animationId: number | null;
+    isPlaying: boolean;
   } | null>(null);
+
+  // Load leaderboard from localStorage
+  useEffect(() => {
+    const stored = localStorage.getItem('qbit-city-leaderboard');
+    if (stored) {
+      setLeaderboard(JSON.parse(stored));
+    }
+  }, []);
+
+  const saveToLeaderboard = (name: string, time: number, coins: number) => {
+    const stored = localStorage.getItem('qbit-city-leaderboard');
+    const lb: LeaderboardEntry[] = stored ? JSON.parse(stored) : [];
+    
+    lb.push({
+      name,
+      timeSurvived: time,
+      coinsCollected: coins,
+      date: new Date().toISOString()
+    });
+    
+    lb.sort((a, b) => b.timeSurvived - a.timeSurvived);
+    const trimmed = lb.slice(0, 20);
+    
+    localStorage.setItem('qbit-city-leaderboard', JSON.stringify(trimmed));
+    setLeaderboard(trimmed);
+  };
 
   const showStatus = (text: string, color: string = '#fff', duration: number = 2000) => {
     setStatus(text);
     setStatusColor(color);
     setTimeout(() => setStatus(''), duration);
+  };
+
+  // Draw coin with spinning animation
+  const drawCoin = (ctx: CanvasRenderingContext2D, coin: Coin) => {
+    const time = Date.now() * 0.004 + coin.spawnTime;
+    const spinWidth = 8 + Math.abs(Math.sin(time)) * 10;
+    const bob = Math.sin(time * 2) * 3;
+    
+    ctx.save();
+    
+    // Glow effect
+    ctx.shadowColor = '#ffd700';
+    ctx.shadowBlur = 20;
+    
+    // Coin outer ring
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    ctx.ellipse(coin.x, coin.y + bob, spinWidth, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Inner darker ring
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#b8860b';
+    ctx.beginPath();
+    ctx.ellipse(coin.x, coin.y + bob, spinWidth * 0.75, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Center highlight
+    ctx.fillStyle = '#ffec8b';
+    ctx.beginPath();
+    ctx.ellipse(coin.x, coin.y + bob, spinWidth * 0.4, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Dollar sign or star symbol
+    if (spinWidth > 12) {
+      ctx.fillStyle = '#b8860b';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('$', coin.x, coin.y + bob);
+    }
+    
+    ctx.restore();
   };
 
   // Draw isometric Qbit
@@ -202,6 +308,55 @@ const Game: React.FC = () => {
     ctx.restore();
   };
 
+  const startGame = () => {
+    if (!playerName.trim()) return;
+    setGameState('playing');
+    setCoinsCollected(0);
+    
+    // Start game loop if ref exists
+    if (gameRef.current) {
+      gameRef.current.isPlaying = true;
+      gameRef.current.gameTime = 0;
+      gameRef.current.speedBoostApplied = false;
+      gameRef.current.coins = [];
+      gameRef.current.coinSpawnTimer = 0;
+      gameRef.current.player.speed = BASE_PLAYER_SPEED;
+    }
+  };
+
+  const handleDeath = () => {
+    if (!gameRef.current) return;
+    
+    const time = gameRef.current.gameTime;
+    const coins = coinsCollected;
+    
+    setFinalStats({ time, coins });
+    saveToLeaderboard(playerName, time, coins);
+    setGameState('game-over');
+    gameRef.current.isPlaying = false;
+  };
+
+  const handlePlayAgain = () => {
+    setGameState('playing');
+    setCoinsCollected(0);
+    
+    if (gameRef.current) {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      
+      // Full restart
+      gameRef.current.isPlaying = true;
+      gameRef.current.gameTime = 0;
+      gameRef.current.speedBoostApplied = false;
+      gameRef.current.coins = [];
+      gameRef.current.coinSpawnTimer = 0;
+      gameRef.current.player.speed = BASE_PLAYER_SPEED;
+      
+      // Regenerate map and reset everything
+      handleRestart();
+    }
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const minimapCanvas = minimapRef.current;
@@ -225,7 +380,7 @@ const Game: React.FC = () => {
         y: 0,
         width: 24,
         height: 24,
-        speed: 300,
+        speed: BASE_PLAYER_SPEED,
         velX: 0,
         velY: 0,
         dirX: 0,
@@ -236,6 +391,7 @@ const Game: React.FC = () => {
       },
       enemies: [] as Enemy[],
       boats: [] as Boat[],
+      coins: [] as Coin[],
       map: {
         width: MAP_WIDTH * TILE_SIZE,
         height: MAP_HEIGHT * TILE_SIZE,
@@ -248,8 +404,11 @@ const Game: React.FC = () => {
       keys: {} as Record<string, boolean>,
       gameTime: 0,
       enemySpawnTimer: 0,
+      coinSpawnTimer: 0,
+      speedBoostApplied: false,
       lastTime: 0,
       animationId: null as number | null,
+      isPlaying: false,
     };
     gameRef.current = game;
 
@@ -279,7 +438,6 @@ const Game: React.FC = () => {
           } else {
             const rand = Math.random();
             if (rand < 0.05) {
-              // Lake
               for (let ly = y - 1; ly <= y + 1; ly++) {
                 for (let lx = x - 1; lx <= x + 1; lx++) {
                   if (ly >= 0 && ly < MAP_HEIGHT && lx >= 0 && lx < MAP_WIDTH) {
@@ -424,17 +582,48 @@ const Game: React.FC = () => {
       }
 
       if (valid) {
+        const baseSpeed = BASE_ENEMY_SPEED + Math.random() * 30;
+        const speed = game.speedBoostApplied ? baseSpeed * 1.2 : baseSpeed;
+        
         game.enemies.push({
           x: ex,
           y: ey,
           width: 24,
           height: 24,
-          speed: 250 + Math.random() * 30,
+          speed,
           trail: [],
           stuckTime: 0,
           flankTimer: 0,
           flankDir: { x: 0, y: 0 },
         });
+      }
+    };
+
+    const spawnCoin = () => {
+      if (game.coins.filter(c => !c.collected).length >= 20) return;
+      
+      let attempts = 0;
+      while (attempts < 50) {
+        attempts++;
+        const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
+        const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
+        
+        if (game.map.tiles[ry][rx] === 0) {
+          const cx = rx * TILE_SIZE + TILE_SIZE / 2;
+          const cy = ry * TILE_SIZE + TILE_SIZE / 2;
+          
+          // Don't spawn too close to player
+          const d = Math.hypot(cx - game.player.x, cy - game.player.y);
+          if (d > 200) {
+            game.coins.push({
+              x: cx,
+              y: cy,
+              collected: false,
+              spawnTime: Date.now() * 0.001,
+            });
+            return;
+          }
+        }
       }
     };
 
@@ -447,12 +636,22 @@ const Game: React.FC = () => {
       game.player.energy = 0;
       game.player.dirX = 0;
       game.player.dirY = 1;
+      game.player.speed = BASE_PLAYER_SPEED;
       setEnergy(0);
 
       game.enemies = [];
       game.enemySpawnTimer = 0;
+      game.coinSpawnTimer = 0;
+      game.speedBoostApplied = false;
+      game.coins = [];
+      
       for (let i = 0; i < 3; i++) {
         spawnEnemy();
+      }
+      
+      // Spawn initial coins
+      for (let i = 0; i < 8; i++) {
+        spawnCoin();
       }
 
       game.camera.x = game.player.x - canvas.width / 2;
@@ -605,8 +804,27 @@ const Game: React.FC = () => {
     };
 
     const update = (dt: number) => {
+      if (!game.isPlaying) return;
+      
       game.gameTime += dt;
       updateBoats(dt);
+
+      // Speed boost at 30 seconds
+      if (!game.speedBoostApplied && game.gameTime >= 30) {
+        game.speedBoostApplied = true;
+        game.player.speed = BASE_PLAYER_SPEED * 1.2;
+        game.enemies.forEach(enemy => {
+          enemy.speed = enemy.speed * 1.2;
+        });
+        showStatus('⚡ SPEED BOOST! Everything is 20% faster!', '#ffcc00', 3000);
+      }
+
+      // Spawn coins periodically
+      game.coinSpawnTimer += dt;
+      if (game.coinSpawnTimer >= 3 + Math.random() * 2) {
+        game.coinSpawnTimer = 0;
+        spawnCoin();
+      }
 
       let dx = 0,
         dy = 0;
@@ -645,7 +863,7 @@ const Game: React.FC = () => {
       );
 
       if (checkLavaDeath()) {
-        init();
+        handleDeath();
         return;
       }
 
@@ -657,6 +875,19 @@ const Game: React.FC = () => {
 
       game.player.trail.push({ x: game.player.x, y: game.player.y });
       if (game.player.trail.length > 20) game.player.trail.shift();
+
+      // Coin collection
+      game.coins.forEach(coin => {
+        if (coin.collected) return;
+        const d = Math.hypot(game.player.x - coin.x, game.player.y - coin.y);
+        if (d < 30) {
+          coin.collected = true;
+          setCoinsCollected(prev => prev + 1);
+        }
+      });
+      
+      // Remove collected coins
+      game.coins = game.coins.filter(c => !c.collected);
 
       // Portal logic
       if (game.player.portalCooldown > 0) game.player.portalCooldown -= dt;
@@ -716,7 +947,7 @@ const Game: React.FC = () => {
           }
 
           if (dist < (game.player.width / 2 + enemy.width / 2)) {
-            init();
+            handleDeath();
             return;
           }
         }
@@ -874,6 +1105,13 @@ const Game: React.FC = () => {
         ctx.beginPath();
         ctx.arc(t.x, t.y, 4, 0, Math.PI * 2);
         ctx.fill();
+      });
+
+      // Draw coins
+      game.coins.forEach(coin => {
+        if (!coin.collected) {
+          drawCoin(ctx, coin);
+        }
       });
 
       // Entities - Draw trails
@@ -1052,6 +1290,16 @@ const Game: React.FC = () => {
         }
       }
 
+      // Coins on minimap
+      minimapCtx.fillStyle = '#ffd700';
+      game.coins.forEach((c) => {
+        if (!c.collected) {
+          minimapCtx.beginPath();
+          minimapCtx.arc((c.x * sc) / TILE_SIZE, (c.y * sc) / TILE_SIZE, 2, 0, Math.PI * 2);
+          minimapCtx.fill();
+        }
+      });
+
       game.boats.forEach((b) => {
         if (b.life <= 0) return;
         minimapCtx.fillStyle = '#8B4513';
@@ -1091,7 +1339,7 @@ const Game: React.FC = () => {
     // Input handlers
     const handleKeyDown = (e: KeyboardEvent) => {
       game.keys[e.code] = true;
-      if (e.code === 'Space') {
+      if (e.code === 'Space' && game.isPlaying) {
         trySpawnPortal();
       }
     };
@@ -1118,12 +1366,17 @@ const Game: React.FC = () => {
       const canvas = canvasRef.current;
       if (!canvas) return;
       
-      // Re-init
       const game = gameRef.current;
       game.map.tiles = [];
       game.map.buildings = [];
       game.map.trees = [];
       game.map.portals = [];
+      game.coins = [];
+      game.coinSpawnTimer = 0;
+      game.speedBoostApplied = false;
+      game.gameTime = 0;
+      game.player.speed = BASE_PLAYER_SPEED;
+      setCoinsCollected(0);
 
       for (let y = 0; y < MAP_HEIGHT; y++) {
         const row: number[] = [];
@@ -1221,11 +1474,32 @@ const Game: React.FC = () => {
             if (d > 800) { ex = candidateX; ey = candidateY; valid = true; }
           }
         }
-        if (valid) game.enemies.push({ x: ex, y: ey, width: 24, height: 24, speed: 250 + Math.random() * 30, trail: [], stuckTime: 0, flankTimer: 0, flankDir: { x: 0, y: 0 } });
+        if (valid) game.enemies.push({ x: ex, y: ey, width: 24, height: 24, speed: BASE_ENEMY_SPEED + Math.random() * 30, trail: [], stuckTime: 0, flankTimer: 0, flankDir: { x: 0, y: 0 } });
+      }
+      
+      // Spawn initial coins
+      for (let i = 0; i < 8; i++) {
+        let attempts = 0;
+        while (attempts < 50) {
+          attempts++;
+          const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
+          const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
+          if (game.map.tiles[ry][rx] === 0) {
+            const cx = rx * TILE_SIZE + TILE_SIZE / 2;
+            const cy = ry * TILE_SIZE + TILE_SIZE / 2;
+            const d = Math.hypot(cx - game.player.x, cy - game.player.y);
+            if (d > 200) {
+              game.coins.push({ x: cx, y: cy, collected: false, spawnTime: Date.now() * 0.001 });
+              break;
+            }
+          }
+        }
       }
 
       game.camera.x = game.player.x - canvas.width / 2;
       game.camera.y = game.player.y - canvas.height / 2;
+      
+      game.isPlaying = true;
     }
   };
 
@@ -1233,55 +1507,208 @@ const Game: React.FC = () => {
     <div className="relative w-full h-screen bg-background overflow-hidden">
       <canvas ref={canvasRef} className="block" />
       
-      {/* UI Overlay */}
-      <div className="absolute top-5 left-5 text-foreground pointer-events-none w-72">
-        <h1 className="m-0 text-2xl text-cyan-400 uppercase tracking-widest font-bold drop-shadow-lg">
-          Qbit City
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">WASD / Arrows to Move</p>
-        <p className="text-sm text-muted-foreground">
-          Spacebar to <span className="text-fuchsia-500">Create Portal</span>
-        </p>
-        <p className="text-sm text-muted-foreground">
-          Ride <span className="text-amber-700">Boats</span> (They sink in 10s!)
-        </p>
-
-        {/* Energy Bar */}
-        <div className="mt-3 w-48 h-2.5 bg-muted border-2 border-border rounded">
-          <div
-            className="h-full transition-all duration-100 rounded"
-            style={{
-              width: `${Math.min(100, (energy / ENERGY_MAX) * 100)}%`,
-              backgroundColor: energy >= ENERGY_MAX ? '#fff' : '#d0f',
-              boxShadow: energy >= ENERGY_MAX ? '0 0 10px #fff' : '0 0 10px #d0f',
-            }}
-          />
+      {/* Name Entry Screen */}
+      {gameState === 'name-entry' && (
+        <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50">
+          <div className="bg-card p-8 rounded-xl border border-border max-w-md w-full mx-4">
+            <h2 className="text-4xl font-bold text-cyan-400 mb-2 text-center tracking-wider">
+              QBIT CITY
+            </h2>
+            <p className="text-muted-foreground text-center mb-6">Survive as long as you can!</p>
+            
+            <input
+              type="text"
+              placeholder="Enter your name..."
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value.slice(0, 15))}
+              onKeyDown={(e) => e.key === 'Enter' && startGame()}
+              className="w-full px-4 py-3 bg-background border border-border rounded-lg 
+                         text-foreground text-lg mb-4 focus:outline-none focus:ring-2 
+                         focus:ring-cyan-400"
+              autoFocus
+            />
+            
+            <button
+              onClick={startGame}
+              disabled={!playerName.trim()}
+              className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
+                         text-white font-bold rounded-lg disabled:opacity-50 
+                         disabled:cursor-not-allowed hover:from-cyan-400 hover:to-blue-500
+                         transition-all"
+            >
+              Start Game
+            </button>
+            
+            <button
+              onClick={() => setShowLeaderboard(true)}
+              className="w-full py-2 mt-3 text-amber-400 hover:text-amber-300 
+                         flex items-center justify-center gap-2 transition-colors"
+            >
+              <Trophy size={18} />
+              View Leaderboard
+            </button>
+          </div>
         </div>
-        <p
-          className="text-xs mt-1"
-          style={{ color: energy >= ENERGY_MAX ? '#fff' : '#d0f' }}
-        >
-          {energy >= ENERGY_MAX ? 'READY (PRESS SPACE)' : 'Move to Charge Energy'}
-        </p>
+      )}
 
-        {/* Status */}
-        {status && (
-          <p
-            className="font-bold mt-2 text-sm animate-pulse"
-            style={{ color: statusColor }}
-          >
-            {status}
+      {/* Game Over Screen */}
+      {gameState === 'game-over' && (
+        <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50">
+          <div className="bg-card p-8 rounded-xl border border-border max-w-md w-full mx-4 text-center">
+            <h2 className="text-3xl font-bold text-red-500 mb-4">GAME OVER</h2>
+            
+            <p className="text-xl text-foreground mb-2">{playerName}</p>
+            
+            <div className="grid grid-cols-2 gap-4 my-6">
+              <div className="bg-background p-4 rounded-lg">
+                <p className="text-muted-foreground text-sm">Time Survived</p>
+                <p className="text-2xl font-bold text-cyan-400">{formatTime(finalStats.time)}</p>
+              </div>
+              <div className="bg-background p-4 rounded-lg">
+                <p className="text-muted-foreground text-sm">Coins Collected</p>
+                <p className="text-2xl font-bold text-amber-400">{finalStats.coins}</p>
+              </div>
+            </div>
+            
+            <button
+              onClick={handlePlayAgain}
+              className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
+                         text-white font-bold rounded-lg hover:from-cyan-400 hover:to-blue-500
+                         transition-all mb-3"
+            >
+              Play Again
+            </button>
+            
+            <button
+              onClick={() => setShowLeaderboard(true)}
+              className="w-full py-2 text-amber-400 hover:text-amber-300 
+                         flex items-center justify-center gap-2 transition-colors"
+            >
+              <Trophy size={18} />
+              View Leaderboard
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Leaderboard Popup */}
+      {showLeaderboard && (
+        <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50">
+          <div className="bg-card p-6 rounded-xl border border-border max-w-lg w-full mx-4 max-h-[80vh]">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold text-amber-400 flex items-center gap-2">
+                <Trophy size={28} /> Leaderboard
+              </h2>
+              <button 
+                onClick={() => setShowLeaderboard(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            
+            {leaderboard.length === 0 ? (
+              <p className="text-muted-foreground text-center py-8">No scores yet. Be the first!</p>
+            ) : (
+              <div className="overflow-y-auto max-h-[50vh]">
+                <table className="w-full">
+                  <thead>
+                    <tr className="text-muted-foreground text-sm border-b border-border">
+                      <th className="py-2 text-left">#</th>
+                      <th className="py-2 text-left">Name</th>
+                      <th className="py-2 text-right">Time</th>
+                      <th className="py-2 text-right">Coins</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leaderboard.map((entry, i) => (
+                      <tr key={i} className="border-b border-border/50">
+                        <td className="py-2 text-muted-foreground">{i + 1}</td>
+                        <td className="py-2 text-foreground">{entry.name}</td>
+                        <td className="py-2 text-right text-cyan-400">{formatTime(entry.timeSurvived)}</td>
+                        <td className="py-2 text-right text-amber-400">{entry.coinsCollected}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* UI Overlay - Only show when playing */}
+      {gameState === 'playing' && (
+        <div className="absolute top-5 left-5 text-foreground pointer-events-none w-72">
+          <div className="flex items-center justify-between">
+            <h1 className="m-0 text-2xl text-cyan-400 uppercase tracking-widest font-bold drop-shadow-lg">
+              Qbit City
+            </h1>
+            <button
+              onClick={() => setShowLeaderboard(true)}
+              className="pointer-events-auto p-2 text-amber-400 hover:text-amber-300 transition-colors"
+            >
+              <Trophy size={24} />
+            </button>
+          </div>
+          
+          {/* Timer and Coins */}
+          <div className="flex items-center gap-4 mt-2 text-lg">
+            <span className="text-cyan-400 font-mono">
+              ⏱ {gameRef.current ? formatTime(gameRef.current.gameTime) : '0:00'}
+            </span>
+            <span className="text-amber-400 font-bold">
+              🪙 {coinsCollected}
+            </span>
+          </div>
+          
+          <p className="text-sm text-muted-foreground mt-2">WASD / Arrows to Move</p>
+          <p className="text-sm text-muted-foreground">
+            Spacebar to <span className="text-fuchsia-500">Create Portal</span>
           </p>
-        )}
-      </div>
+          <p className="text-sm text-muted-foreground">
+            Ride <span className="text-amber-700">Boats</span> (They sink in 10s!)
+          </p>
 
-      {/* Minimap */}
-      <canvas
-        ref={minimapRef}
-        width={150}
-        height={150}
-        className="absolute top-5 right-5 border-2 border-border bg-black/80 rounded"
-      />
+          {/* Energy Bar */}
+          <div className="mt-3 w-48 h-2.5 bg-muted border-2 border-border rounded">
+            <div
+              className="h-full transition-all duration-100 rounded"
+              style={{
+                width: `${Math.min(100, (energy / ENERGY_MAX) * 100)}%`,
+                backgroundColor: energy >= ENERGY_MAX ? '#fff' : '#d0f',
+                boxShadow: energy >= ENERGY_MAX ? '0 0 10px #fff' : '0 0 10px #d0f',
+              }}
+            />
+          </div>
+          <p
+            className="text-xs mt-1"
+            style={{ color: energy >= ENERGY_MAX ? '#fff' : '#d0f' }}
+          >
+            {energy >= ENERGY_MAX ? 'READY (PRESS SPACE)' : 'Move to Charge Energy'}
+          </p>
+
+          {/* Status */}
+          {status && (
+            <p
+              className="font-bold mt-2 text-sm animate-pulse"
+              style={{ color: statusColor }}
+            >
+              {status}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Minimap - Only show when playing */}
+      {gameState === 'playing' && (
+        <canvas
+          ref={minimapRef}
+          width={150}
+          height={150}
+          className="absolute top-5 right-5 border-2 border-border bg-black/80 rounded"
+        />
+      )}
 
       {/* Back Button */}
       <Link
@@ -1292,14 +1719,16 @@ const Game: React.FC = () => {
         <span>Back to Animator</span>
       </Link>
 
-      {/* Restart Button */}
-      <button
-        onClick={handleRestart}
-        className="absolute bottom-5 right-5 flex items-center gap-2 px-4 py-2 bg-secondary/90 hover:bg-secondary text-secondary-foreground rounded-lg transition-all pointer-events-auto"
-      >
-        <RefreshCw size={18} />
-        <span>Restart</span>
-      </button>
+      {/* Restart Button - Only show when playing */}
+      {gameState === 'playing' && (
+        <button
+          onClick={handleRestart}
+          className="absolute bottom-5 right-5 flex items-center gap-2 px-4 py-2 bg-secondary/90 hover:bg-secondary text-secondary-foreground rounded-lg transition-all pointer-events-auto"
+        >
+          <RefreshCw size={18} />
+          <span>Restart</span>
+        </button>
+      )}
     </div>
   );
 };
