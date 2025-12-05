@@ -313,14 +313,34 @@ const Game: React.FC = () => {
     setGameState('playing');
     setCoinsCollected(0);
     
-    // Start game loop if ref exists
+    // Reset and start game
     if (gameRef.current) {
-      gameRef.current.isPlaying = true;
-      gameRef.current.gameTime = 0;
-      gameRef.current.speedBoostApplied = false;
-      gameRef.current.coins = [];
-      gameRef.current.coinSpawnTimer = 0;
-      gameRef.current.player.speed = BASE_PLAYER_SPEED;
+      const game = gameRef.current;
+      game.isPlaying = true;
+      game.gameTime = 0;
+      game.speedBoostApplied = false;
+      game.coinSpawnTimer = 0;
+      game.player.speed = BASE_PLAYER_SPEED;
+      game.player.energy = 0;
+      setEnergy(0);
+      
+      // Respawn coins if empty
+      if (game.coins.length === 0) {
+        for (let i = 0; i < 8; i++) {
+          let attempts = 0;
+          while (attempts < 50) {
+            attempts++;
+            const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
+            const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
+            if (game.map.tiles[ry]?.[rx] === 0) {
+              const cx = rx * TILE_SIZE + TILE_SIZE / 2;
+              const cy = ry * TILE_SIZE + TILE_SIZE / 2;
+              game.coins.push({ x: cx, y: cy, collected: false, spawnTime: Date.now() * 0.001 });
+              break;
+            }
+          }
+        }
+      }
     }
   };
 
@@ -1331,8 +1351,9 @@ const Game: React.FC = () => {
       game.lastTime = timestamp;
       if (dt < 0.1) {
         update(dt);
-        draw();
       }
+      // Always draw, even when paused
+      draw();
       game.animationId = requestAnimationFrame(gameLoop);
     };
 
@@ -1700,15 +1721,15 @@ const Game: React.FC = () => {
         </div>
       )}
 
-      {/* Minimap - Only show when playing */}
-      {gameState === 'playing' && (
-        <canvas
-          ref={minimapRef}
-          width={150}
-          height={150}
-          className="absolute top-5 right-5 border-2 border-border bg-black/80 rounded"
-        />
-      )}
+      {/* Minimap - Always render but hide when not playing */}
+      <canvas
+        ref={minimapRef}
+        width={150}
+        height={150}
+        className={`absolute top-5 right-5 border-2 border-border bg-black/80 rounded ${
+          gameState !== 'playing' ? 'hidden' : ''
+        }`}
+      />
 
       {/* Back Button */}
       <Link
