@@ -6,10 +6,10 @@ const TILE_SIZE = 64;
 const MAP_WIDTH = 50;
 const MAP_HEIGHT = 50;
 const PERSPECTIVE_STRENGTH = 0.4;
-const ENERGY_MAX = 100;
-const ENERGY_GAIN_PER_PIXEL = 0.05;
 const BASE_PLAYER_SPEED = 300;
 const BASE_ENEMY_SPEED = 250;
+const SPEED_BOOST_DURATION = 5; // seconds
+const COLLECTIBLES_START_TIME = 60; // seconds before collectibles appear
 
 // Colors
 const C_ROAD = '#2a2a2a';
@@ -38,7 +38,6 @@ interface Player {
   dirY: number;
   trail: { x: number; y: number }[];
   portalCooldown: number;
-  energy: number;
 }
 
 interface Enemy {
@@ -92,17 +91,30 @@ interface Tree {
   r: number;
 }
 
-interface Coin {
+interface SpeedBoostCoin {
+  x: number;
+  y: number;
+  collected: boolean;
+  quadrant: number;
+  spawnTime: number;
+}
+
+interface SinkCollectible {
   x: number;
   y: number;
   collected: boolean;
   spawnTime: number;
 }
 
+interface DeployedSink {
+  x: number;
+  y: number;
+  deployTime: number;
+}
+
 interface LeaderboardEntry {
   name: string;
   timeSurvived: number;
-  coinsCollected: number;
   date: string;
 }
 
@@ -114,29 +126,41 @@ const formatTime = (seconds: number): string => {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
+// Quadrant helper: 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right
+const getQuadrant = (x: number, y: number): number => {
+  const midX = (MAP_WIDTH * TILE_SIZE) / 2;
+  const midY = (MAP_HEIGHT * TILE_SIZE) / 2;
+  if (x < midX && y < midY) return 0;
+  if (x >= midX && y < midY) return 1;
+  if (x < midX && y >= midY) return 2;
+  return 3;
+};
+
 const Game: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState('');
   const [statusColor, setStatusColor] = useState('#fff');
-  const [energy, setEnergy] = useState(0);
-  const [coinsCollected, setCoinsCollected] = useState(0);
-  const coinsCollectedRef = useRef(0); // Ref to avoid stale closure
+  const [sinkInventory, setSinkInventory] = useState(0);
+  const [speedBoostActive, setSpeedBoostActive] = useState(false);
+  const [speedBoostTimeLeft, setSpeedBoostTimeLeft] = useState(0);
   const [gameTime, setGameTime] = useState(0);
   
   // Game state management
   const [gameState, setGameState] = useState<GameState>('name-entry');
   const [playerName, setPlayerName] = useState('');
-  const playerNameRef = useRef(''); // Ref to avoid stale closure
+  const playerNameRef = useRef('');
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [finalStats, setFinalStats] = useState({ time: 0, coins: 0 });
+  const [finalStats, setFinalStats] = useState({ time: 0 });
   
   const gameRef = useRef<{
     player: Player;
     enemies: Enemy[];
     boats: Boat[];
-    coins: Coin[];
+    speedBoostCoins: SpeedBoostCoin[];
+    sinkCollectibles: SinkCollectible[];
+    deployedSinks: DeployedSink[];
     map: {
       width: number;
       height: number;
@@ -149,8 +173,12 @@ const Game: React.FC = () => {
     keys: Record<string, boolean>;
     gameTime: number;
     enemySpawnTimer: number;
-    coinSpawnTimer: number;
+    speedCoinSpawnTimer: number;
+    sinkSpawnTimer: number;
     speedBoostApplied: boolean;
+    speedBoostActive: boolean;
+    speedBoostEndTime: number;
+    playerSinkInventory: number;
     lastTime: number;
     animationId: number | null;
     isPlaying: boolean;
@@ -160,18 +188,39 @@ const Game: React.FC = () => {
   useEffect(() => {
     const stored = localStorage.getItem('qbit-city-leaderboard');
     if (stored) {
-      setLeaderboard(JSON.parse(stored));
+      try {
+        const parsed = JSON.parse(stored);
+        // Convert old format if needed
+        const converted = parsed.map((e: any) => ({
+          name: e.name,
+          timeSurvived: e.timeSurvived,
+          date: e.date
+        }));
+        setLeaderboard(converted);
+      } catch {
+        setLeaderboard([]);
+      }
     }
   }, []);
 
-  const saveToLeaderboard = (name: string, time: number, coins: number) => {
+  const saveToLeaderboard = (name: string, time: number) => {
     const stored = localStorage.getItem('qbit-city-leaderboard');
-    const lb: LeaderboardEntry[] = stored ? JSON.parse(stored) : [];
+    let lb: LeaderboardEntry[] = [];
+    if (stored) {
+      try {
+        lb = JSON.parse(stored).map((e: any) => ({
+          name: e.name,
+          timeSurvived: e.timeSurvived,
+          date: e.date
+        }));
+      } catch {
+        lb = [];
+      }
+    }
     
     lb.push({
       name,
       timeSurvived: time,
-      coinsCollected: coins,
       date: new Date().toISOString()
     });
     
@@ -188,44 +237,150 @@ const Game: React.FC = () => {
     setTimeout(() => setStatus(''), duration);
   };
 
-  // Draw coin with spinning animation
-  const drawCoin = (ctx: CanvasRenderingContext2D, coin: Coin) => {
-    const time = Date.now() * 0.004 + coin.spawnTime;
-    const spinWidth = 8 + Math.abs(Math.sin(time)) * 10;
-    const bob = Math.sin(time * 2) * 3;
+  // Draw speed boost coin with electric effect
+  const drawSpeedBoostCoin = (ctx: CanvasRenderingContext2D, coin: SpeedBoostCoin) => {
+    const time = Date.now() * 0.005 + coin.spawnTime;
+    const pulse = 0.8 + Math.sin(time * 3) * 0.2;
+    const bob = Math.sin(time * 2) * 4;
     
     ctx.save();
+    ctx.translate(coin.x, coin.y + bob);
     
-    // Glow effect
-    ctx.shadowColor = '#ffd700';
-    ctx.shadowBlur = 20;
+    // Electric glow
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 25 * pulse;
     
-    // Coin outer ring
-    ctx.fillStyle = '#ffd700';
+    // Outer ring
+    ctx.fillStyle = '#00ccff';
     ctx.beginPath();
-    ctx.ellipse(coin.x, coin.y + bob, spinWidth, 12, 0, 0, Math.PI * 2);
+    ctx.arc(0, 0, 14 * pulse, 0, Math.PI * 2);
     ctx.fill();
     
-    // Inner darker ring
+    // Inner ring
     ctx.shadowBlur = 0;
-    ctx.fillStyle = '#b8860b';
+    ctx.fillStyle = '#0088cc';
     ctx.beginPath();
-    ctx.ellipse(coin.x, coin.y + bob, spinWidth * 0.75, 9, 0, 0, Math.PI * 2);
+    ctx.arc(0, 0, 10, 0, Math.PI * 2);
     ctx.fill();
     
-    // Center highlight
-    ctx.fillStyle = '#ffec8b';
+    // Lightning bolt
+    ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.ellipse(coin.x, coin.y + bob, spinWidth * 0.4, 5, 0, 0, Math.PI * 2);
+    ctx.moveTo(-3, -8);
+    ctx.lineTo(2, -2);
+    ctx.lineTo(-1, -2);
+    ctx.lineTo(3, 8);
+    ctx.lineTo(-2, 1);
+    ctx.lineTo(1, 1);
+    ctx.closePath();
     ctx.fill();
     
-    // Dollar sign or star symbol
-    if (spinWidth > 12) {
-      ctx.fillStyle = '#b8860b';
-      ctx.font = 'bold 10px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('$', coin.x, coin.y + bob);
+    // Sparkles
+    ctx.fillStyle = '#ffffff';
+    for (let i = 0; i < 4; i++) {
+      const angle = time * 2 + (i * Math.PI / 2);
+      const dist = 18 + Math.sin(time * 4 + i) * 3;
+      const sx = Math.cos(angle) * dist;
+      const sy = Math.sin(angle) * dist;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    ctx.restore();
+  };
+
+  // Draw sink collectible
+  const drawSinkCollectible = (ctx: CanvasRenderingContext2D, sink: SinkCollectible) => {
+    const time = Date.now() * 0.004 + sink.spawnTime;
+    const pulse = 0.9 + Math.sin(time * 2) * 0.1;
+    const bob = Math.sin(time * 1.5) * 3;
+    
+    ctx.save();
+    ctx.translate(sink.x, sink.y + bob);
+    
+    // Glow
+    ctx.shadowColor = '#ff6600';
+    ctx.shadowBlur = 20 * pulse;
+    
+    // Outer hexagon
+    ctx.fillStyle = '#ff4400';
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 - Math.PI / 2;
+      const x = Math.cos(angle) * 14 * pulse;
+      const y = Math.sin(angle) * 14 * pulse;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    
+    // Inner circle (hole)
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#220000';
+    ctx.beginPath();
+    ctx.arc(0, 0, 8, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Spiral inside
+    ctx.strokeStyle = '#ff8800';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 20; i++) {
+      const angle = (i / 20) * Math.PI * 4 + time * 3;
+      const r = (i / 20) * 6;
+      const x = Math.cos(angle) * r;
+      const y = Math.sin(angle) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    
+    ctx.restore();
+  };
+
+  // Draw deployed sink trap
+  const drawDeployedSink = (ctx: CanvasRenderingContext2D, sink: DeployedSink, gameTime: number) => {
+    const age = gameTime - sink.deployTime;
+    const pulse = 1 + Math.sin(age * 8) * 0.15;
+    
+    ctx.save();
+    ctx.translate(sink.x, sink.y);
+    
+    // Warning glow
+    ctx.shadowColor = '#ff0000';
+    ctx.shadowBlur = 30 * pulse;
+    
+    // Outer danger ring
+    ctx.strokeStyle = '#ff0000';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 25 * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    // Inner trap
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#330000';
+    ctx.beginPath();
+    ctx.arc(0, 0, 18, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Vortex effect
+    ctx.strokeStyle = '#ff4400';
+    ctx.lineWidth = 2;
+    for (let ring = 0; ring < 3; ring++) {
+      ctx.beginPath();
+      const ringOffset = age * 5 + ring * 2;
+      for (let i = 0; i < 30; i++) {
+        const angle = (i / 30) * Math.PI * 2 + ringOffset;
+        const r = 5 + ring * 5 - (i / 30) * 3;
+        const x = Math.cos(angle) * r;
+        const y = Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
     
     ctx.restore();
@@ -313,45 +468,28 @@ const Game: React.FC = () => {
 
   const startGame = () => {
     if (!playerName.trim()) return;
-    playerNameRef.current = playerName.trim(); // Store name in ref
+    playerNameRef.current = playerName.trim();
     setGameState('playing');
-    setCoinsCollected(0);
-    coinsCollectedRef.current = 0;
+    setSinkInventory(0);
+    setSpeedBoostActive(false);
+    setSpeedBoostTimeLeft(0);
     setGameTime(0);
     
-    // Remove focus from input/button so keyboard events work
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
     
-    // Reset and start game
     if (gameRef.current) {
       const game = gameRef.current;
       game.isPlaying = true;
       game.gameTime = 0;
       game.speedBoostApplied = false;
-      game.coinSpawnTimer = 0;
+      game.speedBoostActive = false;
+      game.speedBoostEndTime = 0;
+      game.playerSinkInventory = 0;
+      game.speedCoinSpawnTimer = 0;
+      game.sinkSpawnTimer = 0;
       game.player.speed = BASE_PLAYER_SPEED;
-      game.player.energy = 0;
-      setEnergy(0);
-      
-      // Respawn coins if empty
-      if (game.coins.length === 0) {
-        for (let i = 0; i < 8; i++) {
-          let attempts = 0;
-          while (attempts < 50) {
-            attempts++;
-            const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
-            const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
-            if (game.map.tiles[ry]?.[rx] === 0) {
-              const cx = rx * TILE_SIZE + TILE_SIZE / 2;
-              const cy = ry * TILE_SIZE + TILE_SIZE / 2;
-              game.coins.push({ x: cx, y: cy, collected: false, spawnTime: Date.now() * 0.001 });
-              break;
-            }
-          }
-        }
-      }
     }
   };
 
@@ -359,13 +497,11 @@ const Game: React.FC = () => {
     if (!gameRef.current) return;
     
     const time = gameRef.current.gameTime;
-    const coins = coinsCollectedRef.current; // Use ref to avoid stale closure
     
-    setFinalStats({ time, coins });
-    // Use ref to get current name (avoid stale closure)
+    setFinalStats({ time });
     const nameToSave = playerNameRef.current || playerName;
     if (nameToSave.trim()) {
-      saveToLeaderboard(nameToSave, time, coins);
+      saveToLeaderboard(nameToSave, time);
     }
     setGameState('game-over');
     gameRef.current.isPlaying = false;
@@ -373,22 +509,27 @@ const Game: React.FC = () => {
 
   const handlePlayAgain = () => {
     setGameState('playing');
-    setCoinsCollected(0);
-    coinsCollectedRef.current = 0;
+    setSinkInventory(0);
+    setSpeedBoostActive(false);
+    setSpeedBoostTimeLeft(0);
     
     if (gameRef.current) {
       const canvas = canvasRef.current;
       if (!canvas) return;
       
-      // Full restart
       gameRef.current.isPlaying = true;
       gameRef.current.gameTime = 0;
       gameRef.current.speedBoostApplied = false;
-      gameRef.current.coins = [];
-      gameRef.current.coinSpawnTimer = 0;
+      gameRef.current.speedBoostActive = false;
+      gameRef.current.speedBoostEndTime = 0;
+      gameRef.current.playerSinkInventory = 0;
+      gameRef.current.speedBoostCoins = [];
+      gameRef.current.sinkCollectibles = [];
+      gameRef.current.deployedSinks = [];
+      gameRef.current.speedCoinSpawnTimer = 0;
+      gameRef.current.sinkSpawnTimer = 0;
       gameRef.current.player.speed = BASE_PLAYER_SPEED;
       
-      // Regenerate map and reset everything
       handleRestart();
     }
   };
@@ -423,11 +564,12 @@ const Game: React.FC = () => {
         dirY: 1,
         trail: [] as { x: number; y: number }[],
         portalCooldown: 0,
-        energy: 0,
       },
       enemies: [] as Enemy[],
       boats: [] as Boat[],
-      coins: [] as Coin[],
+      speedBoostCoins: [] as SpeedBoostCoin[],
+      sinkCollectibles: [] as SinkCollectible[],
+      deployedSinks: [] as DeployedSink[],
       map: {
         width: MAP_WIDTH * TILE_SIZE,
         height: MAP_HEIGHT * TILE_SIZE,
@@ -440,8 +582,12 @@ const Game: React.FC = () => {
       keys: {} as Record<string, boolean>,
       gameTime: 0,
       enemySpawnTimer: 0,
-      coinSpawnTimer: 0,
+      speedCoinSpawnTimer: 0,
+      sinkSpawnTimer: 0,
       speedBoostApplied: false,
+      speedBoostActive: false,
+      speedBoostEndTime: 0,
+      playerSinkInventory: 0,
       lastTime: 0,
       animationId: null as number | null,
       isPlaying: false,
@@ -595,8 +741,7 @@ const Game: React.FC = () => {
     };
 
     const spawnEnemy = () => {
-      let ex = 0,
-        ey = 0;
+      let ex = 0, ey = 0;
       let valid = false;
       let attempts = 0;
 
@@ -635,8 +780,67 @@ const Game: React.FC = () => {
       }
     };
 
-    const spawnCoin = (forceSpawn = false) => {
-      if (game.coins.filter(c => !c.collected).length >= 20) return;
+    // Spawn enemy far from player (for sink trap respawn)
+    const spawnEnemyFarFrom = (avoidX: number, avoidY: number, minDist: number) => {
+      let ex = 0, ey = 0;
+      let valid = false;
+      let attempts = 0;
+
+      while (!valid && attempts < 200) {
+        attempts++;
+        const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
+        const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
+
+        if (game.map.tiles[ry][rx] === 0) {
+          const candidateX = rx * TILE_SIZE + TILE_SIZE / 2;
+          const candidateY = ry * TILE_SIZE + TILE_SIZE / 2;
+          const d = Math.hypot(candidateX - avoidX, candidateY - avoidY);
+          if (d > minDist) {
+            ex = candidateX;
+            ey = candidateY;
+            valid = true;
+          }
+        }
+      }
+
+      return valid ? { x: ex, y: ey } : null;
+    };
+
+    // Spawn speed boost coin in a specific quadrant
+    const spawnSpeedBoostCoinInQuadrant = (quadrant: number) => {
+      const midX = MAP_WIDTH / 2;
+      const midY = MAP_HEIGHT / 2;
+      
+      let minX = 1, maxX = midX - 1, minY = 1, maxY = midY - 1;
+      if (quadrant === 1) { minX = midX; maxX = MAP_WIDTH - 2; }
+      if (quadrant === 2) { minY = midY; maxY = MAP_HEIGHT - 2; }
+      if (quadrant === 3) { minX = midX; maxX = MAP_WIDTH - 2; minY = midY; maxY = MAP_HEIGHT - 2; }
+      
+      let attempts = 0;
+      while (attempts < 100) {
+        attempts++;
+        const rx = Math.floor(minX + Math.random() * (maxX - minX));
+        const ry = Math.floor(minY + Math.random() * (maxY - minY));
+        
+        if (game.map.tiles[ry]?.[rx] === 0) {
+          const cx = rx * TILE_SIZE + TILE_SIZE / 2;
+          const cy = ry * TILE_SIZE + TILE_SIZE / 2;
+          
+          game.speedBoostCoins.push({
+            x: cx,
+            y: cy,
+            collected: false,
+            quadrant,
+            spawnTime: Date.now() * 0.001,
+          });
+          return;
+        }
+      }
+    };
+
+    // Spawn sink collectible
+    const spawnSinkCollectible = () => {
+      if (game.sinkCollectibles.filter(s => !s.collected).length >= 2) return;
       
       let attempts = 0;
       while (attempts < 100) {
@@ -647,20 +851,16 @@ const Game: React.FC = () => {
         if (game.map.tiles[ry]?.[rx] === 0) {
           const cx = rx * TILE_SIZE + TILE_SIZE / 2;
           const cy = ry * TILE_SIZE + TILE_SIZE / 2;
-          
-          // During gameplay, don't spawn too close to player
-          if (!forceSpawn) {
-            const d = Math.hypot(cx - game.player.x, cy - game.player.y);
-            if (d < 200) continue;
+          const d = Math.hypot(cx - game.player.x, cy - game.player.y);
+          if (d > 300) {
+            game.sinkCollectibles.push({
+              x: cx,
+              y: cy,
+              collected: false,
+              spawnTime: Date.now() * 0.001,
+            });
+            return;
           }
-          
-          game.coins.push({
-            x: cx,
-            y: cy,
-            collected: false,
-            spawnTime: Date.now() * 0.001,
-          });
-          return;
         }
       }
     };
@@ -671,25 +871,24 @@ const Game: React.FC = () => {
       findSafeSpawn(game.player);
       game.player.trail = [];
       game.player.portalCooldown = 0;
-      game.player.energy = 0;
       game.player.dirX = 0;
       game.player.dirY = 1;
       game.player.speed = BASE_PLAYER_SPEED;
-      setEnergy(0);
 
       game.enemies = [];
       game.enemySpawnTimer = 0;
-      game.coinSpawnTimer = 0;
+      game.speedCoinSpawnTimer = 0;
+      game.sinkSpawnTimer = 0;
       game.speedBoostApplied = false;
-      game.coins = [];
+      game.speedBoostActive = false;
+      game.speedBoostEndTime = 0;
+      game.playerSinkInventory = 0;
+      game.speedBoostCoins = [];
+      game.sinkCollectibles = [];
+      game.deployedSinks = [];
       
       for (let i = 0; i < 3; i++) {
         spawnEnemy();
-      }
-      
-      // Spawn initial coins (force spawn to ignore player distance)
-      for (let i = 0; i < 8; i++) {
-        spawnCoin(true);
       }
 
       game.camera.x = game.player.x - canvas.width / 2;
@@ -703,12 +902,8 @@ const Game: React.FC = () => {
       h: number,
       isPlayer: boolean
     ): boolean => {
-      const halfW = w / 2,
-        halfH = h / 2;
-      const l = x - halfW,
-        r = x + halfW,
-        t = y - halfH,
-        b = y + halfH;
+      const halfW = w / 2, halfH = h / 2;
+      const l = x - halfW, r = x + halfW, t = y - halfH, b = y + halfH;
       const gridX = Math.floor(x / TILE_SIZE);
       const gridY = Math.floor(y / TILE_SIZE);
 
@@ -785,8 +980,7 @@ const Game: React.FC = () => {
         const bottomLen = (MAP_WIDTH - 1) * TILE_SIZE;
 
         let currentDist = b.dist;
-        let nx = 0,
-          ny = 0;
+        let nx = 0, ny = 0;
 
         if (currentDist < topLen) {
           nx = currentDist;
@@ -819,26 +1013,44 @@ const Game: React.FC = () => {
     };
 
     const trySpawnPortal = () => {
-      if (game.player.energy >= ENERGY_MAX) {
-        const spawnDist = 60;
-        const px = game.player.x + game.player.dirX * spawnDist;
-        const py = game.player.y + game.player.dirY * spawnDist;
-
-        game.map.portals.push({
-          x: px,
-          y: py,
-          color: '#ff00ff',
-          angle: 0,
-          life: 10.0,
-        });
-
-        game.player.energy = 0;
-        setEnergy(0);
-        showStatus('>> NEW PORTAL STABILIZED <<', '#d0f');
-        game.player.portalCooldown = 1.0;
-      } else {
-        showStatus('NOT ENOUGH ENERGY!', '#888', 1000);
+      if (game.player.portalCooldown > 0) {
+        showStatus('PORTAL RECHARGING...', '#888', 500);
+        return;
       }
+      
+      // Spawn portal 25px in front of player (very close)
+      const spawnDist = 25;
+      const px = game.player.x + game.player.dirX * spawnDist;
+      const py = game.player.y + game.player.dirY * spawnDist;
+
+      game.map.portals.push({
+        x: px,
+        y: py,
+        color: '#ff00ff',
+        angle: 0,
+        life: 10.0,
+      });
+
+      showStatus('>> PORTAL CREATED <<', '#d0f');
+      game.player.portalCooldown = 0.5; // Short cooldown
+    };
+
+    const deploySink = () => {
+      if (game.playerSinkInventory <= 0) {
+        showStatus('NO SINK TRAPS!', '#888', 500);
+        return;
+      }
+      
+      game.playerSinkInventory--;
+      setSinkInventory(game.playerSinkInventory);
+      
+      game.deployedSinks.push({
+        x: game.player.x,
+        y: game.player.y,
+        deployTime: game.gameTime,
+      });
+      
+      showStatus('SINK TRAP DEPLOYED!', '#ff6600');
     };
 
     const update = (dt: number) => {
@@ -846,32 +1058,67 @@ const Game: React.FC = () => {
       
       game.gameTime += dt;
       
-      // Sync game time to React state every ~0.5 seconds
+      // Sync game time to React state
       if (Math.floor(game.gameTime * 2) !== Math.floor((game.gameTime - dt) * 2)) {
         setGameTime(game.gameTime);
       }
       
       updateBoats(dt);
 
-      // Speed boost at 30 seconds
+      // Speed boost at 30 seconds (game difficulty)
       if (!game.speedBoostApplied && game.gameTime >= 30) {
         game.speedBoostApplied = true;
-        game.player.speed = BASE_PLAYER_SPEED * 1.2;
+        if (!game.speedBoostActive) {
+          game.player.speed = BASE_PLAYER_SPEED * 1.2;
+        }
         game.enemies.forEach(enemy => {
           enemy.speed = enemy.speed * 1.2;
         });
-        showStatus('⚡ SPEED BOOST! Everything is 20% faster!', '#ffcc00', 3000);
+        showStatus('⚡ DIFFICULTY UP! Everything is 20% faster!', '#ffcc00', 3000);
       }
 
-      // Spawn coins periodically
-      game.coinSpawnTimer += dt;
-      if (game.coinSpawnTimer >= 3 + Math.random() * 2) {
-        game.coinSpawnTimer = 0;
-        spawnCoin();
+      // Handle speed boost power-up expiration
+      if (game.speedBoostActive && game.gameTime >= game.speedBoostEndTime) {
+        game.speedBoostActive = false;
+        game.player.speed = game.speedBoostApplied ? BASE_PLAYER_SPEED * 1.2 : BASE_PLAYER_SPEED;
+        setSpeedBoostActive(false);
+        showStatus('Speed boost ended!', '#888', 1000);
+      }
+      
+      // Update speed boost time left for UI
+      if (game.speedBoostActive) {
+        setSpeedBoostTimeLeft(Math.max(0, game.speedBoostEndTime - game.gameTime));
       }
 
-      let dx = 0,
-        dy = 0;
+      // Spawn speed boost coins after 60 seconds (quadrant system)
+      if (game.gameTime >= COLLECTIBLES_START_TIME) {
+        game.speedCoinSpawnTimer += dt;
+        if (game.speedCoinSpawnTimer >= 20 + Math.random() * 10) {
+          game.speedCoinSpawnTimer = 0;
+          
+          // Count coins per quadrant
+          const quadrantCounts = [0, 0, 0, 0];
+          game.speedBoostCoins.forEach(c => {
+            if (!c.collected) quadrantCounts[c.quadrant]++;
+          });
+          
+          // Spawn in quadrants with < 2 coins
+          for (let q = 0; q < 4; q++) {
+            if (quadrantCounts[q] < 2) {
+              spawnSpeedBoostCoinInQuadrant(q);
+            }
+          }
+        }
+        
+        // Spawn sink collectibles after 60 seconds
+        game.sinkSpawnTimer += dt;
+        if (game.sinkSpawnTimer >= 25 + Math.random() * 10) {
+          game.sinkSpawnTimer = 0;
+          spawnSinkCollectible();
+        }
+      }
+
+      let dx = 0, dy = 0;
       if (game.keys['ArrowUp'] || game.keys['KeyW']) dy = -1;
       if (game.keys['ArrowDown'] || game.keys['KeyS']) dy = 1;
       if (game.keys['ArrowLeft'] || game.keys['KeyA']) dx = -1;
@@ -899,7 +1146,7 @@ const Game: React.FC = () => {
         if (b !== riddenBoat) b.life = b.maxLife;
       });
 
-      const moved = attemptMove(
+      attemptMove(
         game.player,
         game.player.velX * dt,
         game.player.velY * dt,
@@ -911,31 +1158,40 @@ const Game: React.FC = () => {
         return;
       }
 
-      if (moved > 0 && game.player.energy < ENERGY_MAX) {
-        game.player.energy += moved * ENERGY_GAIN_PER_PIXEL;
-        if (game.player.energy > ENERGY_MAX) game.player.energy = ENERGY_MAX;
-        setEnergy(game.player.energy);
-      }
-
       game.player.trail.push({ x: game.player.x, y: game.player.y });
       if (game.player.trail.length > 20) game.player.trail.shift();
 
-      // Coin collection
-      game.coins.forEach(coin => {
+      // Speed boost coin collection
+      game.speedBoostCoins.forEach(coin => {
         if (coin.collected) return;
         const d = Math.hypot(game.player.x - coin.x, game.player.y - coin.y);
         if (d < 30) {
           coin.collected = true;
-          setCoinsCollected(prev => {
-            const newVal = prev + 1;
-            coinsCollectedRef.current = newVal;
-            return newVal;
-          });
+          game.speedBoostActive = true;
+          game.speedBoostEndTime = game.gameTime + SPEED_BOOST_DURATION;
+          game.player.speed = (game.speedBoostApplied ? BASE_PLAYER_SPEED * 1.2 : BASE_PLAYER_SPEED) * 2;
+          setSpeedBoostActive(true);
+          showStatus('⚡ 2X SPEED ACTIVATED!', '#00ffff', 2000);
         }
       });
-      
-      // Remove collected coins
-      game.coins = game.coins.filter(c => !c.collected);
+      game.speedBoostCoins = game.speedBoostCoins.filter(c => !c.collected);
+
+      // Sink collectible collection
+      game.sinkCollectibles.forEach(sink => {
+        if (sink.collected) return;
+        const d = Math.hypot(game.player.x - sink.x, game.player.y - sink.y);
+        if (d < 30) {
+          if (game.playerSinkInventory < 3) {
+            sink.collected = true;
+            game.playerSinkInventory++;
+            setSinkInventory(game.playerSinkInventory);
+            showStatus('SINK TRAP COLLECTED! Press C to deploy', '#ff6600', 2000);
+          } else {
+            showStatus('INVENTORY FULL! (Max 3 traps)', '#888', 1000);
+          }
+        }
+      });
+      game.sinkCollectibles = game.sinkCollectibles.filter(s => !s.collected);
 
       // Portal logic
       if (game.player.portalCooldown > 0) game.player.portalCooldown -= dt;
@@ -968,7 +1224,7 @@ const Game: React.FC = () => {
             game.player.y = dest.y;
             game.player.portalCooldown = 2.0;
             game.player.trail = [];
-            showStatus('PORTAL TRAVEL SEQUENCE INITIATED', '#0ff');
+            showStatus('PORTAL TRAVEL!', '#0ff');
             break;
           }
         }
@@ -976,8 +1232,25 @@ const Game: React.FC = () => {
 
       // Enemy logic
       game.enemies.forEach((enemy) => {
-        let moveX = 0,
-          moveY = 0;
+        // Check collision with deployed sinks
+        for (let i = game.deployedSinks.length - 1; i >= 0; i--) {
+          const sink = game.deployedSinks[i];
+          const d = Math.hypot(enemy.x - sink.x, enemy.y - sink.y);
+          if (d < 25) {
+            // Enemy hit the sink - respawn far away
+            game.deployedSinks.splice(i, 1);
+            const newPos = spawnEnemyFarFrom(game.player.x, game.player.y, 1000);
+            if (newPos) {
+              enemy.x = newPos.x;
+              enemy.y = newPos.y;
+              enemy.trail = [];
+              showStatus('ENEMY TRAPPED & RESPAWNED!', '#ff4400', 1500);
+            }
+            break;
+          }
+        }
+
+        let moveX = 0, moveY = 0;
 
         if (enemy.flankTimer > 0) {
           enemy.flankTimer -= dt;
@@ -1000,8 +1273,7 @@ const Game: React.FC = () => {
           }
         }
 
-        let actualX = 0,
-          actualY = 0;
+        let actualX = 0, actualY = 0;
         if (!checkCollision(enemy.x + moveX, enemy.y, enemy.width, enemy.height, false)) {
           enemy.x += moveX;
           actualX = moveX;
@@ -1043,13 +1315,13 @@ const Game: React.FC = () => {
       game.camera.x += (targetCamX - game.camera.x) * 5 * dt;
       game.camera.y += (targetCamY - game.camera.y) * 5 * dt;
 
-      // Spawner
+      // Enemy spawner
       game.enemySpawnTimer += dt;
       if (game.enemySpawnTimer >= 30) {
         game.enemySpawnTimer = 0;
         spawnEnemy();
         spawnEnemy();
-        showStatus('WARNING: HEAVY ENEMY REINFORCEMENTS!', '#f00', 3000);
+        showStatus('WARNING: ENEMY REINFORCEMENTS!', '#f00', 3000);
       }
     };
 
@@ -1070,8 +1342,7 @@ const Game: React.FC = () => {
         for (let x = startCol; x < endCol; x++) {
           if (y >= 0 && y < MAP_HEIGHT && x >= 0 && x < MAP_WIDTH) {
             const type = game.map.tiles[y][x];
-            const dx = x * TILE_SIZE,
-              dy = y * TILE_SIZE;
+            const dx = x * TILE_SIZE, dy = y * TILE_SIZE;
 
             if (type === 0) {
               ctx.fillStyle = C_ROAD;
@@ -1147,6 +1418,11 @@ const Game: React.FC = () => {
         ctx.restore();
       });
 
+      // Deployed sinks
+      game.deployedSinks.forEach(sink => {
+        drawDeployedSink(ctx, sink, game.gameTime);
+      });
+
       // Trees (bottom)
       ctx.fillStyle = '#3e2723';
       game.map.trees.forEach((t) => {
@@ -1155,10 +1431,17 @@ const Game: React.FC = () => {
         ctx.fill();
       });
 
-      // Draw coins
-      game.coins.forEach(coin => {
+      // Draw speed boost coins
+      game.speedBoostCoins.forEach(coin => {
         if (!coin.collected) {
-          drawCoin(ctx, coin);
+          drawSpeedBoostCoin(ctx, coin);
+        }
+      });
+
+      // Draw sink collectibles
+      game.sinkCollectibles.forEach(sink => {
+        if (!sink.collected) {
+          drawSinkCollectible(ctx, sink);
         }
       });
 
@@ -1168,7 +1451,7 @@ const Game: React.FC = () => {
       // Player trail
       ctx.lineWidth = game.player.width * 0.8;
       ctx.lineCap = 'round';
-      ctx.strokeStyle = 'rgba(0, 255, 255, 0.2)';
+      ctx.strokeStyle = game.speedBoostActive ? 'rgba(0, 255, 255, 0.5)' : 'rgba(0, 255, 255, 0.2)';
       ctx.beginPath();
       if (game.player.trail.length > 0) {
         ctx.moveTo(game.player.trail[0].x, game.player.trail[0].y);
@@ -1186,6 +1469,17 @@ const Game: React.FC = () => {
         true,
         isPlayerWalking
       );
+
+      // Speed boost effect around player
+      if (game.speedBoostActive) {
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = 0.5 + Math.sin(Date.now() * 0.01) * 0.3;
+        ctx.beginPath();
+        ctx.arc(game.player.x, game.player.y, 30, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
 
       // Enemies
       game.enemies.forEach((e) => {
@@ -1241,21 +1535,16 @@ const Game: React.FC = () => {
           const bCY = b.y + b.h / 2;
           const leanX = (bCX - screenCX) * PERSPECTIVE_STRENGTH * (b.height / 100);
           const leanY = (bCY - screenCY) * PERSPECTIVE_STRENGTH * (b.height / 100);
-          const rx = b.x + leanX,
-            ry = b.y + leanY;
+          const rx = b.x + leanX, ry = b.y + leanY;
 
           ctx.strokeStyle = '#000';
           ctx.lineWidth = 1;
 
           const drawQuad = (
-            x1: number,
-            y1: number,
-            x2: number,
-            y2: number,
-            x3: number,
-            y3: number,
-            x4: number,
-            y4: number,
+            x1: number, y1: number,
+            x2: number, y2: number,
+            x3: number, y3: number,
+            x4: number, y4: number,
             shade: string
           ) => {
             ctx.fillStyle = shade;
@@ -1272,31 +1561,11 @@ const Game: React.FC = () => {
           if (leanY < 0)
             drawQuad(b.x, b.y, b.x + b.w, b.y, rx + b.w, ry, rx, ry, '#111');
           if (leanY > 0)
-            drawQuad(
-              b.x,
-              b.y + b.h,
-              b.x + b.w,
-              b.y + b.h,
-              rx + b.w,
-              ry + b.h,
-              rx,
-              ry + b.h,
-              '#000'
-            );
+            drawQuad(b.x, b.y + b.h, b.x + b.w, b.y + b.h, rx + b.w, ry + b.h, rx, ry + b.h, '#000');
           if (leanX < 0)
             drawQuad(b.x, b.y, b.x, b.y + b.h, rx, ry + b.h, rx, ry, '#1a1a1a');
           if (leanX > 0)
-            drawQuad(
-              b.x + b.w,
-              b.y,
-              b.x + b.w,
-              b.y + b.h,
-              rx + b.w,
-              ry + b.h,
-              rx + b.w,
-              ry,
-              '#0a0a0a'
-            );
+            drawQuad(b.x + b.w, b.y, b.x + b.w, b.y + b.h, rx + b.w, ry + b.h, rx + b.w, ry, '#0a0a0a');
 
           ctx.fillStyle = b.color;
           ctx.fillRect(rx, ry, b.w, b.h);
@@ -1338,14 +1607,32 @@ const Game: React.FC = () => {
         }
       }
 
-      // Coins on minimap
-      minimapCtx.fillStyle = '#ffd700';
-      game.coins.forEach((c) => {
+      // Speed boost coins on minimap
+      minimapCtx.fillStyle = '#00ffff';
+      game.speedBoostCoins.forEach((c) => {
         if (!c.collected) {
           minimapCtx.beginPath();
-          minimapCtx.arc((c.x * sc) / TILE_SIZE, (c.y * sc) / TILE_SIZE, 2, 0, Math.PI * 2);
+          minimapCtx.arc((c.x * sc) / TILE_SIZE, (c.y * sc) / TILE_SIZE, 3, 0, Math.PI * 2);
           minimapCtx.fill();
         }
+      });
+
+      // Sink collectibles on minimap
+      minimapCtx.fillStyle = '#ff6600';
+      game.sinkCollectibles.forEach((s) => {
+        if (!s.collected) {
+          minimapCtx.beginPath();
+          minimapCtx.arc((s.x * sc) / TILE_SIZE, (s.y * sc) / TILE_SIZE, 3, 0, Math.PI * 2);
+          minimapCtx.fill();
+        }
+      });
+
+      // Deployed sinks on minimap
+      minimapCtx.fillStyle = '#ff0000';
+      game.deployedSinks.forEach((s) => {
+        minimapCtx.beginPath();
+        minimapCtx.arc((s.x * sc) / TILE_SIZE, (s.y * sc) / TILE_SIZE, 4, 0, Math.PI * 2);
+        minimapCtx.fill();
       });
 
       game.boats.forEach((b) => {
@@ -1380,7 +1667,6 @@ const Game: React.FC = () => {
       if (dt < 0.1) {
         update(dt);
       }
-      // Always draw, even when paused
       draw();
       game.animationId = requestAnimationFrame(gameLoop);
     };
@@ -1390,6 +1676,9 @@ const Game: React.FC = () => {
       game.keys[e.code] = true;
       if (e.code === 'Space' && game.isPlaying) {
         trySpawnPortal();
+      }
+      if (e.code === 'KeyC' && game.isPlaying) {
+        deploySink();
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -1420,12 +1709,20 @@ const Game: React.FC = () => {
       game.map.buildings = [];
       game.map.trees = [];
       game.map.portals = [];
-      game.coins = [];
-      game.coinSpawnTimer = 0;
+      game.speedBoostCoins = [];
+      game.sinkCollectibles = [];
+      game.deployedSinks = [];
+      game.speedCoinSpawnTimer = 0;
+      game.sinkSpawnTimer = 0;
       game.speedBoostApplied = false;
+      game.speedBoostActive = false;
+      game.speedBoostEndTime = 0;
+      game.playerSinkInventory = 0;
       game.gameTime = 0;
       game.player.speed = BASE_PLAYER_SPEED;
-      setCoinsCollected(0);
+      setSinkInventory(0);
+      setSpeedBoostActive(false);
+      setSpeedBoostTimeLeft(0);
 
       for (let y = 0; y < MAP_HEIGHT; y++) {
         const row: number[] = [];
@@ -1503,10 +1800,8 @@ const Game: React.FC = () => {
 
       game.player.trail = [];
       game.player.portalCooldown = 0;
-      game.player.energy = 0;
       game.player.dirX = 0;
       game.player.dirY = 1;
-      setEnergy(0);
 
       game.enemies = [];
       game.enemySpawnTimer = 0;
@@ -1524,22 +1819,6 @@ const Game: React.FC = () => {
           }
         }
         if (valid) game.enemies.push({ x: ex, y: ey, width: 24, height: 24, speed: BASE_ENEMY_SPEED + Math.random() * 30, trail: [], stuckTime: 0, flankTimer: 0, flankDir: { x: 0, y: 0 } });
-      }
-      
-      // Spawn initial coins (with forceSpawn to ignore distance check)
-      for (let i = 0; i < 8; i++) {
-        let attempts = 0;
-        while (attempts < 100) {
-          attempts++;
-          const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
-          const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
-          if (game.map.tiles[ry]?.[rx] === 0) {
-            const cx = rx * TILE_SIZE + TILE_SIZE / 2;
-            const cy = ry * TILE_SIZE + TILE_SIZE / 2;
-            game.coins.push({ x: cx, y: cy, collected: false, spawnTime: Date.now() * 0.001 });
-            break;
-          }
-        }
       }
 
       game.camera.x = game.player.x - canvas.width / 2;
@@ -1605,14 +1884,10 @@ const Game: React.FC = () => {
             
             <p className="text-xl text-foreground mb-2">{playerName}</p>
             
-            <div className="grid grid-cols-2 gap-4 my-6">
+            <div className="my-6">
               <div className="bg-background p-4 rounded-lg">
                 <p className="text-muted-foreground text-sm">Time Survived</p>
-                <p className="text-2xl font-bold text-cyan-400">{formatTime(finalStats.time)}</p>
-              </div>
-              <div className="bg-background p-4 rounded-lg">
-                <p className="text-muted-foreground text-sm">Coins Collected</p>
-                <p className="text-2xl font-bold text-amber-400">{finalStats.coins}</p>
+                <p className="text-3xl font-bold text-cyan-400">{formatTime(finalStats.time)}</p>
               </div>
             </div>
             
@@ -1662,8 +1937,7 @@ const Game: React.FC = () => {
                     <tr className="text-muted-foreground text-sm border-b border-border">
                       <th className="py-2 text-left">#</th>
                       <th className="py-2 text-left">Name</th>
-                      <th className="py-2 text-right">Time</th>
-                      <th className="py-2 text-right">Coins</th>
+                      <th className="py-2 text-right">Time Survived</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1672,7 +1946,6 @@ const Game: React.FC = () => {
                         <td className="py-2 text-muted-foreground">{i + 1}</td>
                         <td className="py-2 text-foreground">{entry.name}</td>
                         <td className="py-2 text-right text-cyan-400">{formatTime(entry.timeSurvived)}</td>
-                        <td className="py-2 text-right text-amber-400">{entry.coinsCollected}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1685,7 +1958,7 @@ const Game: React.FC = () => {
 
       {/* UI Overlay - Only show when playing */}
       {gameState === 'playing' && (
-        <div className="absolute top-5 left-5 text-foreground pointer-events-none w-72">
+        <div className="absolute top-5 left-5 text-foreground pointer-events-none w-80">
           <div className="flex items-center justify-between">
             <h1 className="m-0 text-2xl text-cyan-400 uppercase tracking-widest font-bold drop-shadow-lg">
               Qbit City
@@ -1698,41 +1971,61 @@ const Game: React.FC = () => {
             </button>
           </div>
           
-          {/* Timer and Coins */}
+          {/* Timer */}
           <div className="flex items-center gap-4 mt-2 text-lg">
-            <span className="text-cyan-400 font-mono">
+            <span className="text-cyan-400 font-mono text-xl">
               ⏱ {formatTime(gameTime)}
             </span>
-            <span className="text-amber-400 font-bold">
-              🪙 {coinsCollected}
-            </span>
+          </div>
+
+          {/* Speed Boost Indicator */}
+          {speedBoostActive && (
+            <div className="mt-2 bg-cyan-500/20 border border-cyan-400 rounded-lg px-3 py-2 animate-pulse">
+              <span className="text-cyan-400 font-bold">⚡ 2X SPEED! {speedBoostTimeLeft.toFixed(1)}s</span>
+            </div>
+          )}
+
+          {/* Sink Inventory */}
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-muted-foreground text-sm">Sink Traps:</span>
+            <div className="flex gap-1">
+              {[0, 1, 2].map(i => (
+                <div
+                  key={i}
+                  className={`w-6 h-6 rounded border-2 flex items-center justify-center text-xs
+                    ${i < sinkInventory 
+                      ? 'bg-orange-500/30 border-orange-400 text-orange-400' 
+                      : 'bg-muted/20 border-muted-foreground/30 text-muted-foreground/30'
+                    }`}
+                >
+                  🕳️
+                </div>
+              ))}
+            </div>
+            {sinkInventory > 0 && (
+              <span className="text-orange-400 text-xs">(Press C)</span>
+            )}
           </div>
           
-          <p className="text-sm text-muted-foreground mt-2">WASD / Arrows to Move</p>
-          <p className="text-sm text-muted-foreground">
-            Spacebar to <span className="text-fuchsia-500">Create Portal</span>
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Ride <span className="text-amber-700">Boats</span> (They sink in 10s!)
-          </p>
-
-          {/* Energy Bar */}
-          <div className="mt-3 w-48 h-2.5 bg-muted border-2 border-border rounded">
-            <div
-              className="h-full transition-all duration-100 rounded"
-              style={{
-                width: `${Math.min(100, (energy / ENERGY_MAX) * 100)}%`,
-                backgroundColor: energy >= ENERGY_MAX ? '#fff' : '#d0f',
-                boxShadow: energy >= ENERGY_MAX ? '0 0 10px #fff' : '0 0 10px #d0f',
-              }}
-            />
+          <div className="mt-3 space-y-1">
+            <p className="text-sm text-muted-foreground">WASD / Arrows to Move</p>
+            <p className="text-sm text-muted-foreground">
+              <span className="text-fuchsia-500">SPACE</span>: Create Portal
+            </p>
+            <p className="text-sm text-muted-foreground">
+              <span className="text-orange-400">C</span>: Deploy Sink Trap
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Ride <span className="text-amber-700">Boats</span> (They sink in 10s!)
+            </p>
           </div>
-          <p
-            className="text-xs mt-1"
-            style={{ color: energy >= ENERGY_MAX ? '#fff' : '#d0f' }}
-          >
-            {energy >= ENERGY_MAX ? 'READY (PRESS SPACE)' : 'Move to Charge Energy'}
-          </p>
+
+          {/* Collectibles info - only after 60 seconds */}
+          {gameTime < COLLECTIBLES_START_TIME && (
+            <div className="mt-3 text-xs text-muted-foreground">
+              Power-ups appear in {Math.ceil(COLLECTIBLES_START_TIME - gameTime)}s...
+            </div>
+          )}
 
           {/* Status */}
           {status && (
