@@ -509,6 +509,7 @@ const Game: React.FC = () => {
     
     if (gameRef.current) {
       const game = gameRef.current;
+      game.keys = {}; // Reset all keys to prevent stuck movement
       game.isPlaying = true;
       game.gameTime = 0;
       game.speedBoostApplied = false;
@@ -521,6 +522,8 @@ const Game: React.FC = () => {
       game.nextSinkSpawnTime = 25 + Math.random() * 10;
       game.collectiblesInitialized = false;
       game.player.speed = BASE_PLAYER_SPEED;
+      game.player.velX = 0;
+      game.player.velY = 0;
     }
   };
 
