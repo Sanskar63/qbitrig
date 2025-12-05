@@ -121,6 +121,7 @@ const Game: React.FC = () => {
   const [statusColor, setStatusColor] = useState('#fff');
   const [energy, setEnergy] = useState(0);
   const [coinsCollected, setCoinsCollected] = useState(0);
+  const [gameTime, setGameTime] = useState(0);
   
   // Game state management
   const [gameState, setGameState] = useState<GameState>('name-entry');
@@ -312,6 +313,12 @@ const Game: React.FC = () => {
     if (!playerName.trim()) return;
     setGameState('playing');
     setCoinsCollected(0);
+    setGameTime(0);
+    
+    // Remove focus from input/button so keyboard events work
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     
     // Reset and start game
     if (gameRef.current) {
@@ -827,6 +834,12 @@ const Game: React.FC = () => {
       if (!game.isPlaying) return;
       
       game.gameTime += dt;
+      
+      // Sync game time to React state every ~0.5 seconds
+      if (Math.floor(game.gameTime * 2) !== Math.floor((game.gameTime - dt) * 2)) {
+        setGameTime(game.gameTime);
+      }
+      
       updateBoats(dt);
 
       // Speed boost at 30 seconds
@@ -1676,7 +1689,7 @@ const Game: React.FC = () => {
           {/* Timer and Coins */}
           <div className="flex items-center gap-4 mt-2 text-lg">
             <span className="text-cyan-400 font-mono">
-              ⏱ {gameRef.current ? formatTime(gameRef.current.gameTime) : '0:00'}
+              ⏱ {formatTime(gameTime)}
             </span>
             <span className="text-amber-400 font-bold">
               🪙 {coinsCollected}
