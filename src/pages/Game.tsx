@@ -70,6 +70,7 @@ interface Portal {
   color: string;
   angle: number;
   life?: number;
+  isPlayerCreated?: boolean;
 }
 
 interface Building {
@@ -1024,8 +1025,8 @@ const Game: React.FC = () => {
         return;
       }
       
-      // Clear any existing portals - only one portal allowed
-      game.map.portals = [];
+      // Remove only player-created portals (keep permanent ones)
+      game.map.portals = game.map.portals.filter(p => !p.isPlayerCreated);
       
       // Spawn portal 1 second ahead of player based on current speed
       const spawnDist = game.player.speed * 1;
@@ -1038,6 +1039,7 @@ const Game: React.FC = () => {
         color: '#ff00ff',
         angle: 0,
         life: 10.0,
+        isPlayerCreated: true,
       });
 
       game.energy = 0; // Consume energy
@@ -1229,18 +1231,17 @@ const Game: React.FC = () => {
           const p = game.map.portals[i];
           const d = Math.hypot(game.player.x - p.x, game.player.y - p.y);
           if (d < 20) {
-            let destIndex = i;
-            if (game.map.portals.length > 1) {
-              while (destIndex === i) {
-                destIndex = Math.floor(Math.random() * game.map.portals.length);
-              }
+            // Find other portals to teleport to (exclude current one)
+            const otherPortals = game.map.portals.filter((_, idx) => idx !== i);
+            if (otherPortals.length > 0) {
+              const dest = otherPortals[Math.floor(Math.random() * otherPortals.length)];
+              game.player.x = dest.x;
+              game.player.y = dest.y;
+              game.player.portalCooldown = 2.0;
+              game.player.trail = [];
+              showStatus('PORTAL TRAVEL!', '#0ff');
             }
-            const dest = game.map.portals[destIndex];
-            game.player.x = dest.x;
-            game.player.y = dest.y;
-            game.player.portalCooldown = 2.0;
-            game.player.trail = [];
-            showStatus('PORTAL TRAVEL!', '#0ff');
+            // If no other portals, don't teleport (prevents self-loop)
             break;
           }
         }
