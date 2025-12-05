@@ -9,7 +9,7 @@ const PERSPECTIVE_STRENGTH = 0.4;
 const BASE_PLAYER_SPEED = 300;
 const BASE_ENEMY_SPEED = 250;
 const SPEED_BOOST_DURATION = 5; // seconds
-const COLLECTIBLES_START_TIME = 60; // seconds before collectibles appear
+const COLLECTIBLES_START_TIME = 30; // seconds before collectibles appear
 
 // Colors
 const C_ROAD = '#2a2a2a';
@@ -144,6 +144,7 @@ const Game: React.FC = () => {
   const [sinkInventory, setSinkInventory] = useState(0);
   const [speedBoostActive, setSpeedBoostActive] = useState(false);
   const [speedBoostTimeLeft, setSpeedBoostTimeLeft] = useState(0);
+  const [energy, setEnergy] = useState(0);
   const [gameTime, setGameTime] = useState(0);
   
   // Game state management
@@ -179,6 +180,7 @@ const Game: React.FC = () => {
     speedBoostActive: boolean;
     speedBoostEndTime: number;
     playerSinkInventory: number;
+    energy: number;
     lastTime: number;
     animationId: number | null;
     isPlaying: boolean;
@@ -512,6 +514,7 @@ const Game: React.FC = () => {
     setSinkInventory(0);
     setSpeedBoostActive(false);
     setSpeedBoostTimeLeft(0);
+    setEnergy(0);
     
     if (gameRef.current) {
       const canvas = canvasRef.current;
@@ -524,6 +527,7 @@ const Game: React.FC = () => {
       gameRef.current.speedBoostActive = false;
       gameRef.current.speedBoostEndTime = 0;
       gameRef.current.playerSinkInventory = 0;
+      gameRef.current.energy = 0;
       gameRef.current.speedBoostCoins = [];
       gameRef.current.sinkCollectibles = [];
       gameRef.current.deployedSinks = [];
@@ -589,6 +593,7 @@ const Game: React.FC = () => {
       speedBoostActive: false,
       speedBoostEndTime: 0,
       playerSinkInventory: 0,
+      energy: 0,
       lastTime: 0,
       animationId: null as number | null,
       isPlaying: false,
@@ -1014,8 +1019,8 @@ const Game: React.FC = () => {
     };
 
     const trySpawnPortal = () => {
-      if (game.player.portalCooldown > 0) {
-        showStatus('PORTAL RECHARGING...', '#888', 500);
+      if (game.energy < 1) {
+        showStatus('ENERGY NOT FULL! Keep moving!', '#888', 500);
         return;
       }
       
@@ -1032,8 +1037,9 @@ const Game: React.FC = () => {
         life: 10.0,
       });
 
+      game.energy = 0; // Consume energy
+      setEnergy(0);
       showStatus('>> PORTAL CREATED <<', '#d0f');
-      game.player.portalCooldown = 0.5; // Short cooldown
     };
 
     const deploySink = () => {
@@ -1135,6 +1141,12 @@ const Game: React.FC = () => {
 
       game.player.velX = dx * game.player.speed;
       game.player.velY = dy * game.player.speed;
+
+      // Energy recharge based on movement
+      if (dx !== 0 || dy !== 0) {
+        game.energy = Math.min(1, game.energy + dt * 0.3); // Full energy in ~3.3 seconds of movement
+        setEnergy(game.energy);
+      }
 
       const riddenBoat = getBoatUnderPlayer();
       if (riddenBoat) {
@@ -1986,6 +1998,24 @@ const Game: React.FC = () => {
               <span className="text-cyan-400 font-bold">⚡ 2X SPEED! {speedBoostTimeLeft.toFixed(1)}s</span>
             </div>
           )}
+
+          {/* Energy Bar */}
+          <div className="mt-3">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-muted-foreground text-sm">Portal Energy:</span>
+              <span className={`text-xs ${energy >= 1 ? 'text-fuchsia-400' : 'text-muted-foreground'}`}>
+                {energy >= 1 ? 'READY!' : `${Math.floor(energy * 100)}%`}
+              </span>
+            </div>
+            <div className="h-3 bg-muted/30 rounded-full overflow-hidden border border-muted-foreground/30">
+              <div 
+                className={`h-full transition-all duration-100 ${
+                  energy >= 1 ? 'bg-fuchsia-500 animate-pulse' : 'bg-fuchsia-500/60'
+                }`}
+                style={{ width: `${energy * 100}%` }}
+              />
+            </div>
+          </div>
 
           {/* Sink Inventory */}
           <div className="mt-3 flex items-center gap-2">
