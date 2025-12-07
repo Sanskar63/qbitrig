@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, RefreshCw, Trophy, X } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Trophy, X, Shield } from 'lucide-react';
 
 const TILE_SIZE = 64;
 const MAP_WIDTH = 50;
@@ -8,8 +8,10 @@ const MAP_HEIGHT = 50;
 const PERSPECTIVE_STRENGTH = 0.4;
 const BASE_PLAYER_SPEED = 300;
 const BASE_ENEMY_SPEED = 250;
-const SPEED_BOOST_DURATION = 5; // seconds
+const IMMUNITY_DURATION = 10; // seconds
 const COLLECTIBLES_START_TIME = 30; // seconds before collectibles appear
+const COINS_FOR_IMMUNITY = 5; // coins needed for 1 stored immunity
+const MAX_IMMUNITY_INVENTORY = 3; // max stored immunities
 
 // Colors
 const C_ROAD = '#2a2a2a';
@@ -92,7 +94,16 @@ interface Tree {
   r: number;
 }
 
-interface SpeedBoostCoin {
+// New Coin interface
+interface Coin {
+  x: number;
+  y: number;
+  collected: boolean;
+  spawnTime: number;
+}
+
+// Immunity pickup (direct 10s immunity when collected)
+interface ImmunityPickup {
   x: number;
   y: number;
   collected: boolean;
@@ -143,8 +154,10 @@ const Game: React.FC = () => {
   const [status, setStatus] = useState('');
   const [statusColor, setStatusColor] = useState('#fff');
   const [sinkInventory, setSinkInventory] = useState(0);
-  const [speedBoostActive, setSpeedBoostActive] = useState(false);
-  const [speedBoostTimeLeft, setSpeedBoostTimeLeft] = useState(0);
+  const [coinsCollected, setCoinsCollected] = useState(0);
+  const [immunityInventory, setImmunityInventory] = useState(0);
+  const [immunityActive, setImmunityActive] = useState(false);
+  const [immunityTimeLeft, setImmunityTimeLeft] = useState(0);
   const [energy, setEnergy] = useState(0);
   const [gameTime, setGameTime] = useState(0);
   const [screenFlash, setScreenFlash] = useState<{ color: string; opacity: number } | null>(null);
@@ -161,7 +174,8 @@ const Game: React.FC = () => {
     player: Player;
     enemies: Enemy[];
     boats: Boat[];
-    speedBoostCoins: SpeedBoostCoin[];
+    coins: Coin[];
+    immunityPickups: ImmunityPickup[];
     sinkCollectibles: SinkCollectible[];
     deployedSinks: DeployedSink[];
     map: {
@@ -176,14 +190,18 @@ const Game: React.FC = () => {
     keys: Record<string, boolean>;
     gameTime: number;
     enemySpawnTimer: number;
-    speedCoinSpawnTimer: number;
+    coinSpawnTimer: number;
+    immunityPickupSpawnTimer: number;
     sinkSpawnTimer: number;
-    nextSpeedCoinSpawnTime: number;
+    nextCoinSpawnTime: number;
+    nextImmunityPickupSpawnTime: number;
     nextSinkSpawnTime: number;
     collectiblesInitialized: boolean;
     speedBoostApplied: boolean;
-    speedBoostActive: boolean;
-    speedBoostEndTime: number;
+    immunityActive: boolean;
+    immunityEndTime: number;
+    coinsCollected: number;
+    immunityInventory: number;
     playerSinkInventory: number;
     energy: number;
     lastTime: number;
@@ -244,14 +262,60 @@ const Game: React.FC = () => {
     setTimeout(() => setStatus(''), duration);
   };
 
-  // Draw speed boost coin - Lightning bolt icon
-  const drawSpeedBoostCoin = (ctx: CanvasRenderingContext2D, coin: SpeedBoostCoin) => {
+  // Draw coin - Golden spinning coin
+  const drawCoin = (ctx: CanvasRenderingContext2D, coin: Coin) => {
     const time = Date.now() * 0.005 + coin.spawnTime;
+    const bob = Math.sin(time * 2) * 3;
+    const spin = Math.cos(time * 3);
+    
+    ctx.save();
+    ctx.translate(coin.x, coin.y + bob);
+    
+    // Golden glow
+    ctx.shadowColor = '#ffd700';
+    ctx.shadowBlur = 15;
+    
+    // Coin body (ellipse for 3D spin effect)
+    const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 12);
+    gradient.addColorStop(0, '#fff7a0');
+    gradient.addColorStop(0.3, '#ffd700');
+    gradient.addColorStop(0.7, '#daa520');
+    gradient.addColorStop(1, '#b8860b');
+    ctx.fillStyle = gradient;
+    
+    ctx.beginPath();
+    ctx.ellipse(0, 0, Math.abs(spin) * 12 + 2, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Coin shine
+    ctx.shadowBlur = 0;
+    if (spin > 0.3) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.beginPath();
+      ctx.ellipse(-3, -3, 3, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    // $ symbol
+    if (Math.abs(spin) > 0.5) {
+      ctx.fillStyle = '#8b6914';
+      ctx.font = 'bold 10px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('$', 0, 1);
+    }
+    
+    ctx.restore();
+  };
+
+  // Draw immunity pickup - Lightning bolt with shield icon
+  const drawImmunityPickup = (ctx: CanvasRenderingContext2D, pickup: ImmunityPickup) => {
+    const time = Date.now() * 0.005 + pickup.spawnTime;
     const pulse = 0.8 + Math.sin(time * 3) * 0.2;
     const bob = Math.sin(time * 2) * 4;
     
     ctx.save();
-    ctx.translate(coin.x, coin.y + bob);
+    ctx.translate(pickup.x, pickup.y + bob);
     
     // Electric glow effect
     ctx.shadowColor = '#00ffff';
@@ -271,20 +335,32 @@ const Game: React.FC = () => {
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#001133';
     ctx.beginPath();
-    ctx.arc(0, 0, 12, 0, Math.PI * 2);
+    ctx.arc(0, 0, 14, 0, Math.PI * 2);
     ctx.fill();
     
-    // Lightning bolt - larger and more prominent
-    ctx.fillStyle = '#ffff00';
-    ctx.shadowColor = '#ffff00';
+    // Shield icon
+    ctx.fillStyle = '#00ffff';
+    ctx.shadowColor = '#00ffff';
     ctx.shadowBlur = 10;
     ctx.beginPath();
-    ctx.moveTo(-4, -10);
-    ctx.lineTo(3, -3);
-    ctx.lineTo(-1, -3);
-    ctx.lineTo(4, 10);
-    ctx.lineTo(-3, 2);
-    ctx.lineTo(1, 2);
+    ctx.moveTo(0, -9);
+    ctx.lineTo(8, -5);
+    ctx.lineTo(8, 2);
+    ctx.quadraticCurveTo(8, 9, 0, 12);
+    ctx.quadraticCurveTo(-8, 9, -8, 2);
+    ctx.lineTo(-8, -5);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Inner shield highlight
+    ctx.fillStyle = '#001133';
+    ctx.beginPath();
+    ctx.moveTo(0, -5);
+    ctx.lineTo(4, -3);
+    ctx.lineTo(4, 1);
+    ctx.quadraticCurveTo(4, 5, 0, 7);
+    ctx.quadraticCurveTo(-4, 5, -4, 1);
+    ctx.lineTo(-4, -3);
     ctx.closePath();
     ctx.fill();
     
@@ -293,7 +369,7 @@ const Game: React.FC = () => {
     ctx.lineWidth = 2;
     for (let i = 0; i < 3; i++) {
       const angle = time * 3 + (i * Math.PI * 2 / 3);
-      const dist = 16;
+      const dist = 18;
       ctx.beginPath();
       ctx.arc(Math.cos(angle) * dist, Math.sin(angle) * dist, 3, 0, Math.PI * 2);
       ctx.stroke();
@@ -414,7 +490,7 @@ const Game: React.FC = () => {
     ctx.restore();
   };
 
-  // Draw isometric Qbit
+  // Draw isometric Qbit with immunity effect
   const drawQbitIsometric = (
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -422,7 +498,8 @@ const Game: React.FC = () => {
     dirX: number,
     dirY: number,
     isPlayer: boolean,
-    isWalking: boolean
+    isWalking: boolean,
+    hasImmunity: boolean = false
   ) => {
     ctx.save();
     ctx.translate(x, y);
@@ -432,6 +509,28 @@ const Game: React.FC = () => {
 
     const walkBob = isWalking ? Math.sin(Date.now() * 0.01) * 2 : 0;
     const coatPulse = isWalking ? Math.sin(Date.now() * 0.02) * 2 : 0;
+
+    // Immunity shield effect
+    if (hasImmunity && isPlayer) {
+      ctx.save();
+      ctx.rotate(-(angle + Math.PI / 2)); // Counter-rotate for screen-aligned shield
+      const shieldPulse = 0.8 + Math.sin(Date.now() * 0.01) * 0.2;
+      ctx.strokeStyle = '#00ffff';
+      ctx.lineWidth = 4;
+      ctx.globalAlpha = 0.6 + Math.sin(Date.now() * 0.008) * 0.3;
+      ctx.beginPath();
+      ctx.arc(0, 0, 35 * shieldPulse, 0, Math.PI * 2);
+      ctx.stroke();
+      
+      // Inner shield glow
+      ctx.globalAlpha = 0.2;
+      ctx.fillStyle = '#00ffff';
+      ctx.beginPath();
+      ctx.arc(0, 0, 30, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
 
     // Shadow
     ctx.fillStyle = isPlayer ? 'rgba(0, 255, 255, 0.3)' : 'rgba(255, 0, 0, 0.3)';
@@ -499,8 +598,10 @@ const Game: React.FC = () => {
     playerNameRef.current = playerName.trim();
     setGameState('playing');
     setSinkInventory(0);
-    setSpeedBoostActive(false);
-    setSpeedBoostTimeLeft(0);
+    setCoinsCollected(0);
+    setImmunityInventory(0);
+    setImmunityActive(false);
+    setImmunityTimeLeft(0);
     setGameTime(0);
     
     if (document.activeElement instanceof HTMLElement) {
@@ -513,12 +614,16 @@ const Game: React.FC = () => {
       game.isPlaying = true;
       game.gameTime = 0;
       game.speedBoostApplied = false;
-      game.speedBoostActive = false;
-      game.speedBoostEndTime = 0;
+      game.immunityActive = false;
+      game.immunityEndTime = 0;
+      game.coinsCollected = 0;
+      game.immunityInventory = 0;
       game.playerSinkInventory = 0;
-      game.speedCoinSpawnTimer = 0;
+      game.coinSpawnTimer = 0;
+      game.immunityPickupSpawnTimer = 0;
       game.sinkSpawnTimer = 0;
-      game.nextSpeedCoinSpawnTime = 20 + Math.random() * 10;
+      game.nextCoinSpawnTime = 10 + Math.random() * 5;
+      game.nextImmunityPickupSpawnTime = 20 + Math.random() * 10;
       game.nextSinkSpawnTime = 25 + Math.random() * 10;
       game.collectiblesInitialized = false;
       game.player.speed = BASE_PLAYER_SPEED;
@@ -544,8 +649,10 @@ const Game: React.FC = () => {
   const handlePlayAgain = () => {
     setGameState('playing');
     setSinkInventory(0);
-    setSpeedBoostActive(false);
-    setSpeedBoostTimeLeft(0);
+    setCoinsCollected(0);
+    setImmunityInventory(0);
+    setImmunityActive(false);
+    setImmunityTimeLeft(0);
     setEnergy(0);
     
     if (gameRef.current) {
@@ -556,14 +663,18 @@ const Game: React.FC = () => {
       gameRef.current.isPlaying = true;
       gameRef.current.gameTime = 0;
       gameRef.current.speedBoostApplied = false;
-      gameRef.current.speedBoostActive = false;
-      gameRef.current.speedBoostEndTime = 0;
+      gameRef.current.immunityActive = false;
+      gameRef.current.immunityEndTime = 0;
+      gameRef.current.coinsCollected = 0;
+      gameRef.current.immunityInventory = 0;
       gameRef.current.playerSinkInventory = 0;
       gameRef.current.energy = 0;
-      gameRef.current.speedBoostCoins = [];
+      gameRef.current.coins = [];
+      gameRef.current.immunityPickups = [];
       gameRef.current.sinkCollectibles = [];
       gameRef.current.deployedSinks = [];
-      gameRef.current.speedCoinSpawnTimer = 0;
+      gameRef.current.coinSpawnTimer = 0;
+      gameRef.current.immunityPickupSpawnTimer = 0;
       gameRef.current.sinkSpawnTimer = 0;
       gameRef.current.player.speed = BASE_PLAYER_SPEED;
       
@@ -604,7 +715,8 @@ const Game: React.FC = () => {
       },
       enemies: [] as Enemy[],
       boats: [] as Boat[],
-      speedBoostCoins: [] as SpeedBoostCoin[],
+      coins: [] as Coin[],
+      immunityPickups: [] as ImmunityPickup[],
       sinkCollectibles: [] as SinkCollectible[],
       deployedSinks: [] as DeployedSink[],
       map: {
@@ -619,14 +731,18 @@ const Game: React.FC = () => {
       keys: {} as Record<string, boolean>,
       gameTime: 0,
       enemySpawnTimer: 0,
-      speedCoinSpawnTimer: 0,
+      coinSpawnTimer: 0,
+      immunityPickupSpawnTimer: 0,
       sinkSpawnTimer: 0,
-      nextSpeedCoinSpawnTime: 20 + Math.random() * 10,
+      nextCoinSpawnTime: 10 + Math.random() * 5,
+      nextImmunityPickupSpawnTime: 20 + Math.random() * 10,
       nextSinkSpawnTime: 25 + Math.random() * 10,
       collectiblesInitialized: false,
       speedBoostApplied: false,
-      speedBoostActive: false,
-      speedBoostEndTime: 0,
+      immunityActive: false,
+      immunityEndTime: 0,
+      coinsCollected: 0,
+      immunityInventory: 0,
       playerSinkInventory: 0,
       energy: 0,
       lastTime: 0,
@@ -847,8 +963,35 @@ const Game: React.FC = () => {
       return valid ? { x: ex, y: ey } : null;
     };
 
-    // Spawn speed boost coin in a specific quadrant
-    const spawnSpeedBoostCoinInQuadrant = (quadrant: number) => {
+    // Spawn coin on road
+    const spawnCoin = () => {
+      if (game.coins.filter(c => !c.collected).length >= 15) return;
+      
+      let attempts = 0;
+      while (attempts < 100) {
+        attempts++;
+        const rx = Math.floor(Math.random() * (MAP_WIDTH - 2)) + 1;
+        const ry = Math.floor(Math.random() * (MAP_HEIGHT - 2)) + 1;
+        
+        if (game.map.tiles[ry]?.[rx] === 0) {
+          const cx = rx * TILE_SIZE + TILE_SIZE / 2;
+          const cy = ry * TILE_SIZE + TILE_SIZE / 2;
+          const d = Math.hypot(cx - game.player.x, cy - game.player.y);
+          if (d > 200) {
+            game.coins.push({
+              x: cx,
+              y: cy,
+              collected: false,
+              spawnTime: Date.now() * 0.001,
+            });
+            return;
+          }
+        }
+      }
+    };
+
+    // Spawn immunity pickup in a specific quadrant
+    const spawnImmunityPickupInQuadrant = (quadrant: number) => {
       const midX = MAP_WIDTH / 2;
       const midY = MAP_HEIGHT / 2;
       
@@ -867,7 +1010,7 @@ const Game: React.FC = () => {
           const cx = rx * TILE_SIZE + TILE_SIZE / 2;
           const cy = ry * TILE_SIZE + TILE_SIZE / 2;
           
-          game.speedBoostCoins.push({
+          game.immunityPickups.push({
             x: cx,
             y: cy,
             collected: false,
@@ -918,16 +1061,21 @@ const Game: React.FC = () => {
 
       game.enemies = [];
       game.enemySpawnTimer = 0;
-      game.speedCoinSpawnTimer = 0;
+      game.coinSpawnTimer = 0;
+      game.immunityPickupSpawnTimer = 0;
       game.sinkSpawnTimer = 0;
-      game.nextSpeedCoinSpawnTime = 20 + Math.random() * 10;
+      game.nextCoinSpawnTime = 10 + Math.random() * 5;
+      game.nextImmunityPickupSpawnTime = 20 + Math.random() * 10;
       game.nextSinkSpawnTime = 25 + Math.random() * 10;
       game.collectiblesInitialized = false;
       game.speedBoostApplied = false;
-      game.speedBoostActive = false;
-      game.speedBoostEndTime = 0;
+      game.immunityActive = false;
+      game.immunityEndTime = 0;
+      game.coinsCollected = 0;
+      game.immunityInventory = 0;
       game.playerSinkInventory = 0;
-      game.speedBoostCoins = [];
+      game.coins = [];
+      game.immunityPickups = [];
       game.sinkCollectibles = [];
       game.deployedSinks = [];
       
@@ -1102,6 +1250,28 @@ const Game: React.FC = () => {
       showStatus('SINK TRAP DEPLOYED!', '#ff6600');
     };
 
+    const activateImmunity = () => {
+      if (game.immunityInventory <= 0) {
+        showStatus('NO IMMUNITY STORED! Collect 5 coins', '#888', 500);
+        return;
+      }
+      if (game.immunityActive) {
+        showStatus('IMMUNITY ALREADY ACTIVE!', '#888', 500);
+        return;
+      }
+      
+      game.immunityInventory--;
+      setImmunityInventory(game.immunityInventory);
+      game.immunityActive = true;
+      game.immunityEndTime = game.gameTime + IMMUNITY_DURATION;
+      setImmunityActive(true);
+      showStatus('🛡️ IMMUNITY ACTIVATED! 10 seconds', '#00ffff', 2000);
+      
+      // Screen flash effect
+      setScreenFlash({ color: '#00ffff', opacity: 0.3 });
+      setTimeout(() => setScreenFlash(null), 200);
+    };
+
     const update = (dt: number) => {
       if (!game.isPlaying) return;
       
@@ -1117,36 +1287,37 @@ const Game: React.FC = () => {
       // Speed boost at 30 seconds (game difficulty)
       if (!game.speedBoostApplied && game.gameTime >= 30) {
         game.speedBoostApplied = true;
-        if (!game.speedBoostActive) {
-          game.player.speed = BASE_PLAYER_SPEED * 1.2;
-        }
+        game.player.speed = BASE_PLAYER_SPEED * 1.2;
         game.enemies.forEach(enemy => {
           enemy.speed = enemy.speed * 1.2;
         });
         showStatus('⚡ DIFFICULTY UP! Everything is 20% faster!', '#ffcc00', 3000);
       }
 
-      // Handle speed boost power-up expiration
-      if (game.speedBoostActive && game.gameTime >= game.speedBoostEndTime) {
-        game.speedBoostActive = false;
-        game.player.speed = game.speedBoostApplied ? BASE_PLAYER_SPEED * 1.2 : BASE_PLAYER_SPEED;
-        setSpeedBoostActive(false);
-        showStatus('Speed boost ended!', '#888', 1000);
+      // Handle immunity expiration
+      if (game.immunityActive && game.gameTime >= game.immunityEndTime) {
+        game.immunityActive = false;
+        setImmunityActive(false);
+        showStatus('Immunity ended!', '#888', 1000);
       }
       
-      // Update speed boost time left for UI
-      if (game.speedBoostActive) {
-        setSpeedBoostTimeLeft(Math.max(0, game.speedBoostEndTime - game.gameTime));
+      // Update immunity time left for UI
+      if (game.immunityActive) {
+        setImmunityTimeLeft(Math.max(0, game.immunityEndTime - game.gameTime));
       }
 
-      // Spawn speed boost coins and sinks after 30 seconds
+      // Spawn collectibles after 30 seconds
       if (game.gameTime >= COLLECTIBLES_START_TIME) {
-        // First time crossing threshold - spawn initial batch immediately with screen flash
+        // First time crossing threshold - spawn initial batch with screen flash
         if (!game.collectiblesInitialized) {
           game.collectiblesInitialized = true;
-          // Spawn initial speed boost coins in all quadrants
+          // Spawn initial coins
+          for (let i = 0; i < 8; i++) {
+            spawnCoin();
+          }
+          // Spawn initial immunity pickups in all quadrants
           for (let q = 0; q < 4; q++) {
-            spawnSpeedBoostCoinInQuadrant(q);
+            spawnImmunityPickupInQuadrant(q);
           }
           // Spawn initial sink
           spawnSinkCollectible();
@@ -1157,22 +1328,34 @@ const Game: React.FC = () => {
           setTimeout(() => setScreenFlash(null), 300);
         }
         
-        // Regular spawn timer for speed boost coins
-        game.speedCoinSpawnTimer += dt;
-        if (game.speedCoinSpawnTimer >= game.nextSpeedCoinSpawnTime) {
-          game.speedCoinSpawnTimer = 0;
-          game.nextSpeedCoinSpawnTime = 20 + Math.random() * 10; // Set next spawn time
+        // Regular spawn timer for coins
+        game.coinSpawnTimer += dt;
+        if (game.coinSpawnTimer >= game.nextCoinSpawnTime) {
+          game.coinSpawnTimer = 0;
+          game.nextCoinSpawnTime = 8 + Math.random() * 7;
+          // Spawn 2-4 coins at a time
+          const numCoins = 2 + Math.floor(Math.random() * 3);
+          for (let i = 0; i < numCoins; i++) {
+            spawnCoin();
+          }
+        }
+        
+        // Regular spawn timer for immunity pickups
+        game.immunityPickupSpawnTimer += dt;
+        if (game.immunityPickupSpawnTimer >= game.nextImmunityPickupSpawnTime) {
+          game.immunityPickupSpawnTimer = 0;
+          game.nextImmunityPickupSpawnTime = 25 + Math.random() * 15;
           
-          // Count coins per quadrant
+          // Count pickups per quadrant
           const quadrantCounts = [0, 0, 0, 0];
-          game.speedBoostCoins.forEach(c => {
-            if (!c.collected) quadrantCounts[c.quadrant]++;
+          game.immunityPickups.forEach(p => {
+            if (!p.collected) quadrantCounts[p.quadrant]++;
           });
           
-          // Spawn in quadrants with < 2 coins
+          // Spawn in quadrants with < 2 pickups
           for (let q = 0; q < 4; q++) {
             if (quadrantCounts[q] < 2) {
-              spawnSpeedBoostCoinInQuadrant(q);
+              spawnImmunityPickupInQuadrant(q);
             }
           }
         }
@@ -1181,7 +1364,7 @@ const Game: React.FC = () => {
         game.sinkSpawnTimer += dt;
         if (game.sinkSpawnTimer >= game.nextSinkSpawnTime) {
           game.sinkSpawnTimer = 0;
-          game.nextSinkSpawnTime = 25 + Math.random() * 10; // Set next spawn time
+          game.nextSinkSpawnTime = 25 + Math.random() * 10;
           spawnSinkCollectible();
         }
       }
@@ -1205,7 +1388,7 @@ const Game: React.FC = () => {
 
       // Energy recharge based on movement
       if (dx !== 0 || dy !== 0) {
-        game.energy = Math.min(1, game.energy + dt * 0.3); // Full energy in ~3.3 seconds of movement
+        game.energy = Math.min(1, game.energy + dt * 0.3);
         setEnergy(game.energy);
       }
 
@@ -1235,20 +1418,52 @@ const Game: React.FC = () => {
       game.player.trail.push({ x: game.player.x, y: game.player.y });
       if (game.player.trail.length > 20) game.player.trail.shift();
 
-      // Speed boost coin collection
-      game.speedBoostCoins.forEach(coin => {
+      // Coin collection
+      game.coins.forEach(coin => {
         if (coin.collected) return;
         const d = Math.hypot(game.player.x - coin.x, game.player.y - coin.y);
-        if (d < 30) {
+        if (d < 25) {
           coin.collected = true;
-          game.speedBoostActive = true;
-          game.speedBoostEndTime = game.gameTime + SPEED_BOOST_DURATION;
-          game.player.speed = (game.speedBoostApplied ? BASE_PLAYER_SPEED * 1.2 : BASE_PLAYER_SPEED) * 2;
-          setSpeedBoostActive(true);
-          showStatus('⚡ 2X SPEED ACTIVATED!', '#00ffff', 2000);
+          game.coinsCollected++;
+          setCoinsCollected(game.coinsCollected);
+          
+          // Check if we've collected 5 coins
+          if (game.coinsCollected >= COINS_FOR_IMMUNITY) {
+            if (game.immunityInventory < MAX_IMMUNITY_INVENTORY) {
+              game.immunityInventory++;
+              setImmunityInventory(game.immunityInventory);
+              game.coinsCollected = 0;
+              setCoinsCollected(0);
+              showStatus('🛡️ IMMUNITY STORED! Press V to use', '#ffd700', 2000);
+              // Flash effect
+              setScreenFlash({ color: '#ffd700', opacity: 0.3 });
+              setTimeout(() => setScreenFlash(null), 200);
+            } else {
+              game.coinsCollected = COINS_FOR_IMMUNITY - 1; // Keep at max-1, can't store more
+              setCoinsCollected(game.coinsCollected);
+              showStatus('IMMUNITY FULL! (Max 3)', '#888', 1000);
+            }
+          }
         }
       });
-      game.speedBoostCoins = game.speedBoostCoins.filter(c => !c.collected);
+      game.coins = game.coins.filter(c => !c.collected);
+
+      // Immunity pickup collection (direct immunity)
+      game.immunityPickups.forEach(pickup => {
+        if (pickup.collected) return;
+        const d = Math.hypot(game.player.x - pickup.x, game.player.y - pickup.y);
+        if (d < 30) {
+          pickup.collected = true;
+          game.immunityActive = true;
+          game.immunityEndTime = game.gameTime + IMMUNITY_DURATION;
+          setImmunityActive(true);
+          showStatus('🛡️ INSTANT IMMUNITY! 10 seconds', '#00ffff', 2000);
+          // Flash effect
+          setScreenFlash({ color: '#00ffff', opacity: 0.3 });
+          setTimeout(() => setScreenFlash(null), 200);
+        }
+      });
+      game.immunityPickups = game.immunityPickups.filter(p => !p.collected);
 
       // Sink collectible collection
       game.sinkCollectibles.forEach(sink => {
@@ -1287,7 +1502,6 @@ const Game: React.FC = () => {
           const p = game.map.portals[i];
           const d = Math.hypot(game.player.x - p.x, game.player.y - p.y);
           if (d < 20) {
-            // Find other portals to teleport to (exclude current one)
             const otherPortals = game.map.portals.filter((_, idx) => idx !== i);
             if (otherPortals.length > 0) {
               const dest = otherPortals[Math.floor(Math.random() * otherPortals.length)];
@@ -1297,7 +1511,6 @@ const Game: React.FC = () => {
               game.player.trail = [];
               showStatus('PORTAL TRAVEL!', '#0ff');
             }
-            // If no other portals, don't teleport (prevents self-loop)
             break;
           }
         }
@@ -1310,7 +1523,6 @@ const Game: React.FC = () => {
           const sink = game.deployedSinks[i];
           const d = Math.hypot(enemy.x - sink.x, enemy.y - sink.y);
           if (d < 25) {
-            // Enemy hit the sink - respawn far away
             game.deployedSinks.splice(i, 1);
             const newPos = spawnEnemyFarFrom(game.player.x, game.player.y, 1000);
             if (newPos) {
@@ -1340,9 +1552,21 @@ const Game: React.FC = () => {
             moveY = (edy / dist) * enemy.speed * dt;
           }
 
+          // Enemy collision - check immunity
           if (dist < (game.player.width / 2 + enemy.width / 2)) {
-            handleDeath();
-            return;
+            if (!game.immunityActive) {
+              handleDeath();
+              return;
+            } else {
+              // Push enemy away when immune
+              const pushDist = 50;
+              const newPos = spawnEnemyFarFrom(game.player.x, game.player.y, 500);
+              if (newPos) {
+                enemy.x = newPos.x;
+                enemy.y = newPos.y;
+                enemy.trail = [];
+              }
+            }
           }
         }
 
@@ -1485,18 +1709,19 @@ const Game: React.FC = () => {
         }
         ctx.beginPath();
         for (let i = 0; i < 3; i++) {
-          ctx.ellipse(0, 0, 20 - i * 5, 10 - i * 2, i + p.angle, 0, Math.PI * 2);
+          const r = 20 - i * 5;
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
         }
         ctx.stroke();
         ctx.restore();
       });
 
       // Deployed sinks
-      game.deployedSinks.forEach(sink => {
-        drawDeployedSink(ctx, sink, game.gameTime);
+      game.deployedSinks.forEach((s) => {
+        drawDeployedSink(ctx, s, game.gameTime);
       });
 
-      // Trees (bottom)
+      // Tree trunks
       ctx.fillStyle = '#3e2723';
       game.map.trees.forEach((t) => {
         ctx.beginPath();
@@ -1504,10 +1729,17 @@ const Game: React.FC = () => {
         ctx.fill();
       });
 
-      // Draw speed boost coins
-      game.speedBoostCoins.forEach(coin => {
+      // Draw coins
+      game.coins.forEach(coin => {
         if (!coin.collected) {
-          drawSpeedBoostCoin(ctx, coin);
+          drawCoin(ctx, coin);
+        }
+      });
+
+      // Draw immunity pickups
+      game.immunityPickups.forEach(pickup => {
+        if (!pickup.collected) {
+          drawImmunityPickup(ctx, pickup);
         }
       });
 
@@ -1521,10 +1753,10 @@ const Game: React.FC = () => {
       // Entities - Draw trails
       const isPlayerWalking = game.player.velX !== 0 || game.player.velY !== 0;
 
-      // Player trail
+      // Player trail - changes color when immune
       ctx.lineWidth = game.player.width * 0.8;
       ctx.lineCap = 'round';
-      ctx.strokeStyle = game.speedBoostActive ? 'rgba(0, 255, 255, 0.5)' : 'rgba(0, 255, 255, 0.2)';
+      ctx.strokeStyle = game.immunityActive ? 'rgba(0, 255, 255, 0.5)' : 'rgba(0, 255, 255, 0.2)';
       ctx.beginPath();
       if (game.player.trail.length > 0) {
         ctx.moveTo(game.player.trail[0].x, game.player.trail[0].y);
@@ -1532,7 +1764,7 @@ const Game: React.FC = () => {
       }
       ctx.stroke();
 
-      // Draw player with isometric Qbit
+      // Draw player with isometric Qbit (with immunity effect)
       drawQbitIsometric(
         ctx,
         game.player.x,
@@ -1540,19 +1772,9 @@ const Game: React.FC = () => {
         game.player.dirX,
         game.player.dirY,
         true,
-        isPlayerWalking
+        isPlayerWalking,
+        game.immunityActive
       );
-
-      // Speed boost effect around player
-      if (game.speedBoostActive) {
-        ctx.strokeStyle = '#00ffff';
-        ctx.lineWidth = 3;
-        ctx.globalAlpha = 0.5 + Math.sin(Date.now() * 0.01) * 0.3;
-        ctx.beginPath();
-        ctx.arc(game.player.x, game.player.y, 30, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
 
       // Enemies
       game.enemies.forEach((e) => {
@@ -1571,7 +1793,7 @@ const Game: React.FC = () => {
         const dirX = dist > 0 ? edx / dist : 0;
         const dirY = dist > 0 ? edy / dist : 1;
 
-        drawQbitIsometric(ctx, e.x, e.y, dirX, dirY, false, true);
+        drawQbitIsometric(ctx, e.x, e.y, dirX, dirY, false, true, false);
       });
 
       // Trees (top)
@@ -1680,12 +1902,22 @@ const Game: React.FC = () => {
         }
       }
 
-      // Speed boost coins on minimap
-      minimapCtx.fillStyle = '#00ffff';
-      game.speedBoostCoins.forEach((c) => {
+      // Coins on minimap
+      minimapCtx.fillStyle = '#ffd700';
+      game.coins.forEach((c) => {
         if (!c.collected) {
           minimapCtx.beginPath();
-          minimapCtx.arc((c.x * sc) / TILE_SIZE, (c.y * sc) / TILE_SIZE, 3, 0, Math.PI * 2);
+          minimapCtx.arc((c.x * sc) / TILE_SIZE, (c.y * sc) / TILE_SIZE, 2, 0, Math.PI * 2);
+          minimapCtx.fill();
+        }
+      });
+
+      // Immunity pickups on minimap
+      minimapCtx.fillStyle = '#00ffff';
+      game.immunityPickups.forEach((p) => {
+        if (!p.collected) {
+          minimapCtx.beginPath();
+          minimapCtx.arc((p.x * sc) / TILE_SIZE, (p.y * sc) / TILE_SIZE, 3, 0, Math.PI * 2);
           minimapCtx.fill();
         }
       });
@@ -1753,6 +1985,9 @@ const Game: React.FC = () => {
       if (e.code === 'KeyC' && game.isPlaying) {
         deploySink();
       }
+      if (e.code === 'KeyV' && game.isPlaying) {
+        activateImmunity();
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       game.keys[e.code] = false;
@@ -1778,25 +2013,31 @@ const Game: React.FC = () => {
       if (!canvas) return;
       
       const game = gameRef.current;
-      game.keys = {}; // Reset stuck keys
+      game.keys = {};
       game.map.tiles = [];
       game.map.buildings = [];
       game.map.trees = [];
       game.map.portals = [];
-      game.speedBoostCoins = [];
+      game.coins = [];
+      game.immunityPickups = [];
       game.sinkCollectibles = [];
       game.deployedSinks = [];
-      game.speedCoinSpawnTimer = 0;
+      game.coinSpawnTimer = 0;
+      game.immunityPickupSpawnTimer = 0;
       game.sinkSpawnTimer = 0;
       game.speedBoostApplied = false;
-      game.speedBoostActive = false;
-      game.speedBoostEndTime = 0;
+      game.immunityActive = false;
+      game.immunityEndTime = 0;
+      game.coinsCollected = 0;
+      game.immunityInventory = 0;
       game.playerSinkInventory = 0;
       game.gameTime = 0;
       game.player.speed = BASE_PLAYER_SPEED;
       setSinkInventory(0);
-      setSpeedBoostActive(false);
-      setSpeedBoostTimeLeft(0);
+      setCoinsCollected(0);
+      setImmunityInventory(0);
+      setImmunityActive(false);
+      setImmunityTimeLeft(0);
 
       for (let y = 0; y < MAP_HEIGHT; y++) {
         const row: number[] = [];
@@ -1971,27 +2212,28 @@ const Game: React.FC = () => {
             <div className="my-6">
               <div className="bg-background p-4 rounded-lg">
                 <p className="text-muted-foreground text-sm">Time Survived</p>
-                <p className="text-3xl font-bold text-cyan-400">{formatTime(finalStats.time)}</p>
+                <p className="text-3xl font-mono text-cyan-400">{formatTime(finalStats.time)}</p>
               </div>
             </div>
             
-            <button
-              onClick={handlePlayAgain}
-              className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
-                         text-white font-bold rounded-lg hover:from-cyan-400 hover:to-blue-500
-                         transition-all mb-3"
-            >
-              Play Again
-            </button>
-            
-            <button
-              onClick={() => setShowLeaderboard(true)}
-              className="w-full py-2 text-amber-400 hover:text-amber-300 
-                         flex items-center justify-center gap-2 transition-colors"
-            >
-              <Trophy size={18} />
-              View Leaderboard
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={handlePlayAgain}
+                className="flex-1 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
+                           text-white font-bold rounded-lg hover:from-cyan-400 hover:to-blue-500
+                           transition-all"
+              >
+                Play Again
+              </button>
+              <button
+                onClick={() => setShowLeaderboard(true)}
+                className="px-4 py-3 bg-amber-500/20 border border-amber-400 
+                           text-amber-400 font-bold rounded-lg hover:bg-amber-500/30
+                           transition-all"
+              >
+                <Trophy size={20} />
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2062,12 +2304,56 @@ const Game: React.FC = () => {
             </span>
           </div>
 
-          {/* Speed Boost Indicator */}
-          {speedBoostActive && (
+          {/* Immunity Indicator */}
+          {immunityActive && (
             <div className="mt-2 bg-cyan-500/20 border border-cyan-400 rounded-lg px-3 py-2 animate-pulse">
-              <span className="text-cyan-400 font-bold">⚡ 2X SPEED! {speedBoostTimeLeft.toFixed(1)}s</span>
+              <span className="text-cyan-400 font-bold flex items-center gap-2">
+                <Shield size={18} /> IMMUNE! {immunityTimeLeft.toFixed(1)}s
+              </span>
             </div>
           )}
+
+          {/* Coin Counter */}
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-muted-foreground text-sm">Coins:</span>
+            <div className="flex gap-1">
+              {[0, 1, 2, 3, 4].map(i => (
+                <div
+                  key={i}
+                  className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-xs
+                    ${i < coinsCollected 
+                      ? 'bg-amber-500/50 border-amber-400 text-amber-400' 
+                      : 'bg-muted/20 border-muted-foreground/30'
+                    }`}
+                >
+                  {i < coinsCollected ? '$' : ''}
+                </div>
+              ))}
+            </div>
+            <span className="text-amber-400 text-xs">({coinsCollected}/5)</span>
+          </div>
+
+          {/* Immunity Inventory */}
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-muted-foreground text-sm">Stored Immunity:</span>
+            <div className="flex gap-1">
+              {[0, 1, 2].map(i => (
+                <div
+                  key={i}
+                  className={`w-6 h-6 rounded border-2 flex items-center justify-center
+                    ${i < immunityInventory 
+                      ? 'bg-cyan-500/30 border-cyan-400 text-cyan-400' 
+                      : 'bg-muted/20 border-muted-foreground/30 text-muted-foreground/30'
+                    }`}
+                >
+                  <Shield size={12} />
+                </div>
+              ))}
+            </div>
+            {immunityInventory > 0 && (
+              <span className="text-cyan-400 text-xs">(Press V)</span>
+            )}
+          </div>
 
           {/* Energy Bar */}
           <div className="mt-3">
@@ -2118,11 +2404,14 @@ const Game: React.FC = () => {
               <span className="text-orange-400">C</span>: Deploy Sink Trap
             </p>
             <p className="text-sm text-muted-foreground">
+              <span className="text-cyan-400">V</span>: Use Stored Immunity
+            </p>
+            <p className="text-sm text-muted-foreground">
               Ride <span className="text-amber-700">Boats</span> (They sink in 10s!)
             </p>
           </div>
 
-          {/* Collectibles info - only after 60 seconds */}
+          {/* Collectibles info - only before 30 seconds */}
           {gameTime < COLLECTIBLES_START_TIME && (
             <div className="mt-3 text-xs text-muted-foreground">
               Power-ups appear in {Math.ceil(COLLECTIBLES_START_TIME - gameTime)}s...
