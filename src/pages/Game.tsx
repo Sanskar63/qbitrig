@@ -197,6 +197,7 @@ const Game: React.FC = () => {
     nextImmunityPickupSpawnTime: number;
     nextSinkSpawnTime: number;
     collectiblesInitialized: boolean;
+    coinsInitialized: boolean;
     speedBoostApplied: boolean;
     immunityActive: boolean;
     immunityEndTime: number;
@@ -626,6 +627,7 @@ const Game: React.FC = () => {
       game.nextImmunityPickupSpawnTime = 20 + Math.random() * 10;
       game.nextSinkSpawnTime = 25 + Math.random() * 10;
       game.collectiblesInitialized = false;
+      game.coinsInitialized = false;
       game.player.speed = BASE_PLAYER_SPEED;
       game.player.velX = 0;
       game.player.velY = 0;
@@ -738,6 +740,7 @@ const Game: React.FC = () => {
       nextImmunityPickupSpawnTime: 20 + Math.random() * 10,
       nextSinkSpawnTime: 25 + Math.random() * 10,
       collectiblesInitialized: false,
+      coinsInitialized: false,
       speedBoostApplied: false,
       immunityActive: false,
       immunityEndTime: 0,
@@ -965,7 +968,7 @@ const Game: React.FC = () => {
 
     // Spawn coin on road
     const spawnCoin = () => {
-      if (game.coins.filter(c => !c.collected).length >= 15) return;
+      if (game.coins.filter(c => !c.collected).length >= 40) return;
       
       let attempts = 0;
       while (attempts < 100) {
@@ -1068,6 +1071,7 @@ const Game: React.FC = () => {
       game.nextImmunityPickupSpawnTime = 20 + Math.random() * 10;
       game.nextSinkSpawnTime = 25 + Math.random() * 10;
       game.collectiblesInitialized = false;
+      game.coinsInitialized = false;
       game.speedBoostApplied = false;
       game.immunityActive = false;
       game.immunityEndTime = 0;
@@ -1306,15 +1310,32 @@ const Game: React.FC = () => {
         setImmunityTimeLeft(Math.max(0, game.immunityEndTime - game.gameTime));
       }
 
-      // Spawn collectibles after 30 seconds
+      // Spawn coins from the start of the game
+      if (!game.coinsInitialized) {
+        game.coinsInitialized = true;
+        // Spawn initial batch of coins
+        for (let i = 0; i < 20; i++) {
+          spawnCoin();
+        }
+      }
+      
+      // Regular spawn timer for coins (always active)
+      game.coinSpawnTimer += dt;
+      if (game.coinSpawnTimer >= game.nextCoinSpawnTime) {
+        game.coinSpawnTimer = 0;
+        game.nextCoinSpawnTime = 3 + Math.random() * 4;
+        // Spawn 3-5 coins at a time
+        const numCoins = 3 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < numCoins; i++) {
+          spawnCoin();
+        }
+      }
+      
+      // Spawn other collectibles after 30 seconds
       if (game.gameTime >= COLLECTIBLES_START_TIME) {
         // First time crossing threshold - spawn initial batch with screen flash
         if (!game.collectiblesInitialized) {
           game.collectiblesInitialized = true;
-          // Spawn initial coins
-          for (let i = 0; i < 8; i++) {
-            spawnCoin();
-          }
           // Spawn initial immunity pickups in all quadrants
           for (let q = 0; q < 4; q++) {
             spawnImmunityPickupInQuadrant(q);
@@ -1326,18 +1347,6 @@ const Game: React.FC = () => {
           // Screen flash effect
           setScreenFlash({ color: '#00ff00', opacity: 0.4 });
           setTimeout(() => setScreenFlash(null), 300);
-        }
-        
-        // Regular spawn timer for coins
-        game.coinSpawnTimer += dt;
-        if (game.coinSpawnTimer >= game.nextCoinSpawnTime) {
-          game.coinSpawnTimer = 0;
-          game.nextCoinSpawnTime = 8 + Math.random() * 7;
-          // Spawn 2-4 coins at a time
-          const numCoins = 2 + Math.floor(Math.random() * 3);
-          for (let i = 0; i < numCoins; i++) {
-            spawnCoin();
-          }
         }
         
         // Regular spawn timer for immunity pickups
