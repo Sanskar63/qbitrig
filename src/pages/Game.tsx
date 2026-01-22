@@ -131,6 +131,36 @@ interface LeaderboardEntry {
   date: string;
 }
 
+interface QuizQuestion {
+  question: string;
+  options: string[];
+  correctIndex: number;
+}
+
+// Quiz question pool
+const QUIZ_QUESTIONS: QuizQuestion[] = [
+  { question: "What is 7 x 8?", options: ["54", "56", "58", "64"], correctIndex: 1 },
+  { question: "Which planet is known as the Red Planet?", options: ["Venus", "Jupiter", "Mars", "Saturn"], correctIndex: 2 },
+  { question: "What is the capital of Japan?", options: ["Seoul", "Beijing", "Tokyo", "Bangkok"], correctIndex: 2 },
+  { question: "How many sides does a hexagon have?", options: ["5", "6", "7", "8"], correctIndex: 1 },
+  { question: "What is the largest ocean on Earth?", options: ["Atlantic", "Indian", "Arctic", "Pacific"], correctIndex: 3 },
+  { question: "What year did World War II end?", options: ["1943", "1944", "1945", "1946"], correctIndex: 2 },
+  { question: "What is 15% of 200?", options: ["20", "25", "30", "35"], correctIndex: 2 },
+  { question: "Which element has the chemical symbol 'O'?", options: ["Gold", "Oxygen", "Iron", "Silver"], correctIndex: 1 },
+  { question: "How many continents are there?", options: ["5", "6", "7", "8"], correctIndex: 2 },
+  { question: "What is the square root of 144?", options: ["10", "11", "12", "14"], correctIndex: 2 },
+  { question: "Which animal is known as the King of the Jungle?", options: ["Tiger", "Elephant", "Lion", "Bear"], correctIndex: 2 },
+  { question: "What is the boiling point of water in Celsius?", options: ["90°C", "100°C", "110°C", "120°C"], correctIndex: 1 },
+  { question: "How many bones are in the adult human body?", options: ["186", "206", "226", "246"], correctIndex: 1 },
+  { question: "What is 9 squared?", options: ["72", "81", "90", "99"], correctIndex: 1 },
+  { question: "Which planet is closest to the Sun?", options: ["Venus", "Mercury", "Mars", "Earth"], correctIndex: 1 },
+  { question: "What is the smallest prime number?", options: ["0", "1", "2", "3"], correctIndex: 2 },
+  { question: "How many degrees are in a circle?", options: ["180", "270", "360", "420"], correctIndex: 2 },
+  { question: "What gas do plants absorb from the air?", options: ["Oxygen", "Nitrogen", "Carbon Dioxide", "Hydrogen"], correctIndex: 2 },
+  { question: "What is 17 + 28?", options: ["43", "44", "45", "46"], correctIndex: 2 },
+  { question: "Which is the longest river in the world?", options: ["Amazon", "Nile", "Yangtze", "Mississippi"], correctIndex: 1 },
+];
+
 type GameState = 'name-entry' | 'playing' | 'game-over';
 type MultiplayerMode = 'single' | 'multiplayer';
 
@@ -171,6 +201,14 @@ const Game: React.FC = () => {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [finalStats, setFinalStats] = useState({ time: 0 });
+  
+  // Quiz state
+  const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [quizCompleted, setQuizCompleted] = useState(false);
+  const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
+  const [answerFeedback, setAnswerFeedback] = useState<'correct' | 'wrong' | null>(null);
+  const [wrongAnswerCount, setWrongAnswerCount] = useState(0);
   
   // Multiplayer state
   const [multiplayerMode, setMultiplayerMode] = useState<MultiplayerMode>('single');
@@ -516,6 +554,15 @@ const Game: React.FC = () => {
         setImmunityActive(false);
         setImmunityTimeLeft(0);
         setEnergy(0);
+        
+        // Reset quiz state
+        setQuizQuestions([]);
+        setCurrentQuestionIndex(0);
+        setQuizCompleted(false);
+        setSelectedAnswer(null);
+        setAnswerFeedback(null);
+        setWrongAnswerCount(0);
+        
         setGameState('playing');
         
         showStatus('Respawned!', '#00ff00', 2000);
@@ -965,8 +1012,26 @@ const Game: React.FC = () => {
     }
   };
 
+  const initializeQuiz = () => {
+    // Randomly select 3 unique questions from the pool
+    const shuffled = [...QUIZ_QUESTIONS].sort(() => Math.random() - 0.5);
+    const selected = shuffled.slice(0, 3);
+    setQuizQuestions(selected);
+    setCurrentQuestionIndex(0);
+    setQuizCompleted(false);
+    setSelectedAnswer(null);
+    setAnswerFeedback(null);
+    setWrongAnswerCount(0);
+  };
+
   const handleDeath = () => {
     if (!gameRef.current) return;
+    
+    // Prevent multiple death triggers
+    if (!gameRef.current.isPlaying) return;
+    
+    // Mark as not playing immediately to prevent re-entry
+    gameRef.current.isPlaying = false;
     
     const time = gameRef.current.gameTime;
     
@@ -975,8 +1040,41 @@ const Game: React.FC = () => {
     if (nameToSave.trim()) {
       saveToLeaderboard(nameToSave, time);
     }
+    
+    // Initialize quiz for respawn
+    initializeQuiz();
+    
     setGameState('game-over');
-    gameRef.current.isPlaying = false;
+  };
+  
+  const handleQuizAnswer = (answerIndex: number) => {
+    if (answerFeedback !== null) return; // Already answered
+    
+    setSelectedAnswer(answerIndex);
+    const currentQuestion = quizQuestions[currentQuestionIndex];
+    const isCorrect = answerIndex === currentQuestion.correctIndex;
+    
+    setAnswerFeedback(isCorrect ? 'correct' : 'wrong');
+    
+    if (!isCorrect) {
+      setWrongAnswerCount(prev => prev + 1);
+    }
+    
+    // Move to next question or complete quiz after a delay
+    setTimeout(() => {
+      if (currentQuestionIndex < 2) {
+        setCurrentQuestionIndex(prev => prev + 1);
+        setSelectedAnswer(null);
+        setAnswerFeedback(null);
+      } else {
+        // Quiz completed
+        setQuizCompleted(true);
+      }
+    }, 1000);
+  };
+  
+  const handleRetryQuiz = () => {
+    initializeQuiz();
   };
 
   const handlePlayAgain = () => {
@@ -995,6 +1093,14 @@ const Game: React.FC = () => {
     setImmunityActive(false);
     setImmunityTimeLeft(0);
     setEnergy(0);
+    
+    // Reset quiz state
+    setQuizQuestions([]);
+    setCurrentQuestionIndex(0);
+    setQuizCompleted(false);
+    setSelectedAnswer(null);
+    setAnswerFeedback(null);
+    setWrongAnswerCount(0);
     
     if (gameRef.current) {
       const canvas = canvasRef.current;
@@ -2831,39 +2937,118 @@ const Game: React.FC = () => {
         </div>
       )}
 
-      {/* Game Over Screen */}
+      {/* Game Over Screen with Quiz */}
       {gameState === 'game-over' && (
         <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50">
-          <div className="bg-card p-8 rounded-xl border border-border max-w-md w-full mx-4 text-center">
-            <h2 className="text-3xl font-bold text-red-500 mb-4">GAME OVER</h2>
+          <div className="bg-card p-8 rounded-xl border border-border max-w-lg w-full mx-4 text-center">
+            <h2 className="text-3xl font-bold text-red-500 mb-2">GAME OVER</h2>
             
-            <p className="text-xl text-foreground mb-2">{playerName}</p>
+            <p className="text-lg text-foreground mb-1">{playerName}</p>
             
-            <div className="my-6">
-              <div className="bg-background p-4 rounded-lg">
-                <p className="text-muted-foreground text-sm">Time Survived</p>
-                <p className="text-3xl font-mono text-cyan-400">{formatTime(finalStats.time)}</p>
+            <div className="mb-4">
+              <div className="bg-background p-3 rounded-lg inline-block">
+                <p className="text-muted-foreground text-xs">Time Survived</p>
+                <p className="text-2xl font-mono text-cyan-400">{formatTime(finalStats.time)}</p>
               </div>
             </div>
             
-            <div className="flex gap-3">
-              <button
-                onClick={handlePlayAgain}
-                className="flex-1 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
-                           text-white font-bold rounded-lg hover:from-cyan-400 hover:to-blue-500
-                           transition-all"
-              >
-                Play Again
-              </button>
+            {/* Quiz Section */}
+            {!quizCompleted && quizQuestions.length > 0 && (
+              <div className="mb-6">
+                <div className="flex items-center justify-center gap-2 mb-3">
+                  <span className="text-amber-400 font-bold">Answer 3 Questions to Respawn</span>
+                </div>
+                
+                <div className="text-sm text-muted-foreground mb-3">
+                  Question {currentQuestionIndex + 1} of 3
+                  {wrongAnswerCount > 0 && (
+                    <span className="text-red-400 ml-2">({wrongAnswerCount} wrong)</span>
+                  )}
+                </div>
+                
+                <div className="bg-background p-4 rounded-lg mb-4">
+                  <p className="text-lg text-foreground font-medium mb-4">
+                    {quizQuestions[currentQuestionIndex]?.question}
+                  </p>
+                  
+                  <div className="grid grid-cols-2 gap-2">
+                    {quizQuestions[currentQuestionIndex]?.options.map((option, index) => {
+                      let buttonClass = "py-2 px-3 rounded-lg font-medium transition-all text-sm ";
+                      
+                      if (answerFeedback !== null) {
+                        if (index === quizQuestions[currentQuestionIndex].correctIndex) {
+                          buttonClass += "bg-green-500 text-white ";
+                        } else if (index === selectedAnswer && answerFeedback === 'wrong') {
+                          buttonClass += "bg-red-500 text-white ";
+                        } else {
+                          buttonClass += "bg-muted text-muted-foreground ";
+                        }
+                      } else {
+                        buttonClass += "bg-muted hover:bg-muted/80 text-foreground cursor-pointer ";
+                      }
+                      
+                      return (
+                        <button
+                          key={index}
+                          onClick={() => handleQuizAnswer(index)}
+                          disabled={answerFeedback !== null}
+                          className={buttonClass}
+                        >
+                          {option}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                
+                {answerFeedback && (
+                  <p className={`text-sm font-bold ${answerFeedback === 'correct' ? 'text-green-400' : 'text-red-400'}`}>
+                    {answerFeedback === 'correct' ? 'Correct!' : 'Wrong!'}
+                  </p>
+                )}
+              </div>
+            )}
+            
+            {/* Quiz Completed */}
+            {quizCompleted && (
+              <div className="mb-6">
+                <div className="bg-green-500/20 border border-green-400 p-4 rounded-lg mb-4">
+                  <p className="text-green-400 font-bold text-lg">Quiz Complete!</p>
+                  <p className="text-green-300 text-sm">
+                    You got {3 - wrongAnswerCount}/3 correct
+                  </p>
+                </div>
+                
+                <div className="flex gap-3">
+                  <button
+                    onClick={handlePlayAgain}
+                    className="flex-1 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
+                               text-white font-bold rounded-lg hover:from-cyan-400 hover:to-blue-500
+                               transition-all"
+                  >
+                    Play Again
+                  </button>
+                  <button
+                    onClick={() => setShowLeaderboard(true)}
+                    className="px-4 py-3 bg-amber-500/20 border border-amber-400 
+                               text-amber-400 font-bold rounded-lg hover:bg-amber-500/30
+                               transition-all"
+                  >
+                    <Trophy size={20} />
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {/* Show leaderboard button during quiz */}
+            {!quizCompleted && (
               <button
                 onClick={() => setShowLeaderboard(true)}
-                className="px-4 py-3 bg-amber-500/20 border border-amber-400 
-                           text-amber-400 font-bold rounded-lg hover:bg-amber-500/30
-                           transition-all"
+                className="text-sm text-muted-foreground hover:text-amber-400 transition-colors"
               >
-                <Trophy size={20} />
+                View Leaderboard
               </button>
-            </div>
+            )}
           </div>
         </div>
       )}
