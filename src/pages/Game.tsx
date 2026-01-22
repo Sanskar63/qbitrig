@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, RefreshCw, Trophy, X, Shield } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Trophy, X, Shield, Users, Globe } from 'lucide-react';
+import { socketService } from '@/services/socket';
 
 const TILE_SIZE = 64;
 const MAP_WIDTH = 50;
@@ -131,6 +132,7 @@ interface LeaderboardEntry {
 }
 
 type GameState = 'name-entry' | 'playing' | 'game-over';
+type MultiplayerMode = 'single' | 'multiplayer';
 
 const formatTime = (seconds: number): string => {
   const mins = Math.floor(seconds / 60);
@@ -170,6 +172,16 @@ const Game: React.FC = () => {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [finalStats, setFinalStats] = useState({ time: 0 });
   
+  // Multiplayer state
+  const [multiplayerMode, setMultiplayerMode] = useState<MultiplayerMode>('single');
+  const [roomCode, setRoomCode] = useState('');
+  const [roomCodeInput, setRoomCodeInput] = useState('');
+  const [isHost, setIsHost] = useState(false);
+  const [roomPlayers, setRoomPlayers] = useState<Array<{ id: string; name: string }>>([]);
+  const [isConnected, setIsConnected] = useState(false);
+  const socketIdRef = useRef<string | null>(null);
+  const lastServerStateRef = useRef<any>(null);
+  
   const gameRef = useRef<{
     player: Player;
     enemies: Enemy[];
@@ -204,10 +216,17 @@ const Game: React.FC = () => {
     coinsCollected: number;
     immunityInventory: number;
     playerSinkInventory: number;
-    energy: number;
-    lastTime: number;
-    animationId: number | null;
-    isPlaying: boolean;
+      energy: number;
+      lastTime: number;
+      lastInputTime?: number;
+      animationId: number | null;
+      isPlaying: boolean;
+      otherPlayers?: Array<{ id: string; x: number; y: number; dirX: number; dirY: number; trail: Array<{ x: number; y: number }> }>;
+      // For smooth interpolation in multiplayer
+      serverPosition?: { x: number; y: number; timestamp: number };
+      predictedPosition?: { x: number; y: number };
+      positionHistory?: Array<{ x: number; y: number; timestamp: number }>;
+      lastServerUpdateTime?: number;
   } | null>(null);
 
   // Load leaderboard from localStorage
@@ -228,6 +247,286 @@ const Game: React.FC = () => {
       }
     }
   }, []);
+
+  // Socket connection and multiplayer setup
+  useEffect(() => {
+    if (multiplayerMode === 'multiplayer') {
+      const socket = socketService.connect();
+      socketIdRef.current = socket.id;
+
+      socket.on('connect', () => {
+        setIsConnected(true);
+        socketIdRef.current = socket.id;
+        console.log('Connected to multiplayer server');
+      });
+
+      socket.on('disconnect', () => {
+        setIsConnected(false);
+        console.log('Disconnected from multiplayer server');
+      });
+
+      // Room events
+      socket.on('room_created', ({ room }: any) => {
+        setRoomCode(room.code);
+        setIsHost(true);
+        setRoomPlayers(room.players);
+        showStatus('Room created! Share code: ' + room.code, '#00ff00', 3000);
+      });
+
+      socket.on('room_joined', ({ room, player }: any) => {
+        setRoomCode(room.code);
+        setIsHost(room.hostId === socket.id);
+        setRoomPlayers(room.players);
+        showStatus(`Joined room ${room.code}`, '#00ff00', 2000);
+      });
+
+      socket.on('player_joined', ({ player, room }: any) => {
+        setRoomPlayers(room.players);
+        showStatus(`${player.name} joined`, '#00ff00', 2000);
+      });
+
+      socket.on('player_left', ({ playerId, room }: any) => {
+        setRoomPlayers(room.players);
+      });
+
+      // Game events
+      socket.on('game_started', ({ gameState: serverGameState }: any) => {
+        if (!gameRef.current) return;
+        
+        // Initialize game with server state
+        const game = gameRef.current;
+        game.map = serverGameState.map;
+        game.enemies = serverGameState.enemies || [];
+        game.boats = serverGameState.boats || [];
+        game.coins = serverGameState.coins || [];
+        game.immunityPickups = serverGameState.immunityPickups || [];
+        game.sinkCollectibles = serverGameState.sinkCollectibles || [];
+        game.deployedSinks = serverGameState.deployedSinks || [];
+        game.map.portals = serverGameState.portals || [];
+
+        // Find our player
+        const ourPlayer = serverGameState.players.find((p: any) => p.id === socket.id);
+        if (ourPlayer) {
+          game.player.x = ourPlayer.x;
+          game.player.y = ourPlayer.y;
+          game.player.dirX = ourPlayer.dirX || 0;
+          game.player.dirY = ourPlayer.dirY || 1;
+          game.player.speed = BASE_PLAYER_SPEED; // Ensure speed is set correctly
+          game.coinsCollected = ourPlayer.coinsCollected || 0;
+          game.immunityInventory = ourPlayer.immunityInventory || 0;
+          game.playerSinkInventory = ourPlayer.sinkInventory || 0;
+          game.energy = ourPlayer.energy || 0;
+          game.immunityActive = ourPlayer.immunityActive || false;
+          game.immunityEndTime = ourPlayer.immunityEndTime || 0;
+          // Initialize trail with starting position
+          game.player.trail = [{ x: game.player.x, y: game.player.y }];
+        }
+
+        game.isPlaying = true;
+        game.gameTime = 0;
+        setGameState('playing');
+        setCoinsCollected(game.coinsCollected);
+        setImmunityInventory(game.immunityInventory);
+        setSinkInventory(game.playerSinkInventory);
+        setEnergy(game.energy);
+        setImmunityActive(game.immunityActive);
+      });
+
+      socket.on('game_state', (serverState: any) => {
+        if (!gameRef.current || !gameRef.current.isPlaying) return;
+        
+        lastServerStateRef.current = serverState;
+        const game = gameRef.current;
+
+        // Update enemies, boats, collectibles from server
+        game.enemies = serverState.enemies || [];
+        game.boats = serverState.boats || [];
+        game.coins = serverState.coins || [];
+        game.immunityPickups = serverState.immunityPickups || [];
+        game.sinkCollectibles = serverState.sinkCollectibles || [];
+        game.deployedSinks = serverState.deployedSinks || [];
+        game.map.portals = serverState.portals || [];
+
+        // Update game time
+        game.gameTime = serverState.gameTime || 0;
+        setGameTime(game.gameTime);
+
+        // Update our player state from server (with smooth reconciliation)
+        const serverPlayer = serverState.players.find((p: any) => p.id === socket.id);
+        if (serverPlayer) {
+          const serverTimestamp = serverState.timestamp || Date.now();
+          
+          // Initialize position history if needed
+          if (!game.positionHistory) {
+            game.positionHistory = [];
+          }
+          
+          // Add server position to history (keep last 3 positions for interpolation)
+          game.positionHistory.push({
+            x: serverPlayer.x,
+            y: serverPlayer.y,
+            timestamp: serverTimestamp
+          });
+          
+          // Keep only last 3 positions
+          if (game.positionHistory.length > 3) {
+            game.positionHistory.shift();
+          }
+          
+          // Store latest server position
+          game.serverPosition = {
+            x: serverPlayer.x,
+            y: serverPlayer.y,
+            timestamp: serverTimestamp
+          };
+          game.lastServerUpdateTime = serverTimestamp;
+          
+          // Ensure speed is correct (server might have applied speed boost)
+          if (serverPlayer.speed) {
+            game.player.speed = serverPlayer.speed;
+          } else {
+            game.player.speed = BASE_PLAYER_SPEED;
+          }
+          
+          // Reconcile position if needed
+          const dist = Math.hypot(
+            game.player.x - serverPlayer.x,
+            game.player.y - serverPlayer.y
+          );
+          
+          // Simple reconciliation: snap if too far, otherwise blend gently
+          if (dist > 100) {
+            // Large desync - snap to server position
+            console.warn(`Large desync detected: ${dist.toFixed(1)}px, snapping to server`);
+            game.player.x = serverPlayer.x;
+            game.player.y = serverPlayer.y;
+            game.player.trail = [];
+            game.predictedPosition = { x: game.player.x, y: game.player.y };
+          } else if (dist > 20) {
+            // Medium desync - blend towards server
+            const lerpFactor = 0.15;
+            game.player.x += (serverPlayer.x - game.player.x) * lerpFactor;
+            game.player.y += (serverPlayer.y - game.player.y) * lerpFactor;
+          }
+          // Small desyncs (< 20px) - trust client prediction
+
+          game.player.dirX = serverPlayer.dirX;
+          game.player.dirY = serverPlayer.dirY;
+          game.coinsCollected = serverPlayer.coinsCollected;
+          game.immunityInventory = serverPlayer.immunityInventory;
+          game.playerSinkInventory = serverPlayer.sinkInventory;
+          game.energy = serverPlayer.energy;
+          game.immunityActive = serverPlayer.immunityActive;
+          game.immunityEndTime = serverPlayer.immunityEndTime;
+
+          // Update React state
+          setCoinsCollected(game.coinsCollected);
+          setImmunityInventory(game.immunityInventory);
+          setSinkInventory(game.playerSinkInventory);
+          setEnergy(game.energy);
+          setImmunityActive(game.immunityActive);
+          
+          if (game.immunityActive) {
+            setImmunityTimeLeft(Math.max(0, game.immunityEndTime - game.gameTime));
+          }
+        }
+
+      // Update other players (for rendering)
+      // Store in gameRef for rendering later
+      (game as any).otherPlayers = serverState.players
+        .filter((p: any) => p.id !== socket.id)
+        .map((p: any) => ({
+          ...p,
+          trail: p.trail || []
+        }));
+      });
+
+      socket.on('player_death', ({ playerId }: any) => {
+        if (playerId === socket.id) {
+          handleDeath();
+        }
+      });
+
+      socket.on('portal_created', ({ portal }: any) => {
+        if (gameRef.current) {
+          gameRef.current.map.portals.push(portal);
+        }
+      });
+
+      socket.on('sink_deployed', ({ sink }: any) => {
+        if (gameRef.current) {
+          gameRef.current.deployedSinks.push(sink);
+        }
+      });
+
+      socket.on('immunity_activated', ({ playerId }: any) => {
+        if (playerId === socket.id) {
+          showStatus('🛡️ IMMUNITY ACTIVATED!', '#00ffff', 2000);
+          setScreenFlash({ color: '#00ffff', opacity: 0.3 });
+          setTimeout(() => setScreenFlash(null), 200);
+        }
+      });
+
+      socket.on('action_error', ({ message }: any) => {
+        showStatus(message, '#ff0000', 2000);
+      });
+
+      socket.on('start_error', ({ message }: any) => {
+        showStatus('Error: ' + message, '#ff0000', 3000);
+      });
+
+      // Player respawned (Play Again in multiplayer)
+      socket.on('player_respawned', ({ player, gameState: serverGameState }: any) => {
+        if (!gameRef.current) return;
+        
+        const game = gameRef.current;
+        
+        // Reset local game state
+        game.isPlaying = true;
+        game.gameTime = serverGameState.gameTime || 0;
+        game.speedBoostApplied = false;
+        game.immunityActive = false;
+        game.immunityEndTime = 0;
+        game.coinsCollected = 0;
+        game.immunityInventory = 0;
+        game.playerSinkInventory = 0;
+        game.energy = 0;
+        game.keys = {};
+        
+        // Update player position from server
+        game.player.x = player.x;
+        game.player.y = player.y;
+        game.player.velX = 0;
+        game.player.velY = 0;
+        game.player.dirX = 0;
+        game.player.dirY = 1;
+        game.player.trail = [];
+        game.player.speed = player.speed || BASE_PLAYER_SPEED;
+        
+        // Reset server position tracking
+        (game as any).serverPosition = { x: player.x, y: player.y };
+        (game as any).predictedPosition = { x: player.x, y: player.y };
+        (game as any).positionHistory = [];
+        (game as any).lastServerUpdateTime = Date.now();
+        
+        // Reset UI state
+        setSinkInventory(0);
+        setCoinsCollected(0);
+        setImmunityInventory(0);
+        setImmunityActive(false);
+        setImmunityTimeLeft(0);
+        setEnergy(0);
+        setGameState('playing');
+        
+        showStatus('Respawned!', '#00ff00', 2000);
+        console.log('Player respawned at:', player.x, player.y);
+      });
+
+      return () => {
+        socketService.disconnect();
+      };
+    }
+  }, [multiplayerMode]);
 
   const saveToLeaderboard = (name: string, time: number) => {
     const stored = localStorage.getItem('qbit-city-leaderboard');
@@ -594,9 +893,41 @@ const Game: React.FC = () => {
     ctx.restore();
   };
 
+  const createRoom = () => {
+    if (!playerName.trim()) {
+      showStatus('Please enter your name', '#ff0000', 2000);
+      return;
+    }
+    socketService.createRoom(playerName.trim());
+  };
+
+  const joinRoom = () => {
+    if (!playerName.trim()) {
+      showStatus('Please enter your name', '#ff0000', 2000);
+      return;
+    }
+    if (!roomCodeInput.trim()) {
+      showStatus('Please enter room code', '#ff0000', 2000);
+      return;
+    }
+    socketService.joinRoom(roomCodeInput.trim().toUpperCase(), playerName.trim());
+  };
+
   const startGame = () => {
     if (!playerName.trim()) return;
     playerNameRef.current = playerName.trim();
+    
+    if (multiplayerMode === 'multiplayer') {
+      // In multiplayer, host starts the game via socket
+      if (isHost) {
+        socketService.startGame();
+      } else {
+        showStatus('Only host can start the game', '#ff0000', 2000);
+      }
+      return;
+    }
+    
+    // Single-player mode
     setGameState('playing');
     setSinkInventory(0);
     setCoinsCollected(0);
@@ -649,6 +980,14 @@ const Game: React.FC = () => {
   };
 
   const handlePlayAgain = () => {
+    // In multiplayer mode, request respawn from server
+    if (multiplayerMode === 'multiplayer') {
+      socketService.respawn();
+      showStatus('Respawning...', '#ffff00', 1500);
+      return;
+    }
+    
+    // Single player mode: reset locally
     setGameState('playing');
     setSinkInventory(0);
     setCoinsCollected(0);
@@ -749,8 +1088,14 @@ const Game: React.FC = () => {
       playerSinkInventory: 0,
       energy: 0,
       lastTime: 0,
+      lastInputTime: 0,
       animationId: null as number | null,
       isPlaying: false,
+      otherPlayers: [],
+      serverPosition: undefined,
+      predictedPosition: undefined,
+      positionHistory: [],
+      lastServerUpdateTime: undefined,
     };
     gameRef.current = game;
 
@@ -1209,6 +1554,11 @@ const Game: React.FC = () => {
     };
 
     const trySpawnPortal = () => {
+      if (multiplayerMode === 'multiplayer') {
+        socketService.usePortal();
+        return;
+      }
+      
       if (game.energy < 1) {
         showStatus('ENERGY NOT FULL! Keep moving!', '#888', 500);
         return;
@@ -1237,6 +1587,11 @@ const Game: React.FC = () => {
     };
 
     const deploySink = () => {
+      if (multiplayerMode === 'multiplayer') {
+        socketService.deploySink();
+        return;
+      }
+      
       if (game.playerSinkInventory <= 0) {
         showStatus('NO SINK TRAPS!', '#888', 500);
         return;
@@ -1255,6 +1610,11 @@ const Game: React.FC = () => {
     };
 
     const activateImmunity = () => {
+      if (multiplayerMode === 'multiplayer') {
+        socketService.activateImmunity();
+        return;
+      }
+      
       if (game.immunityInventory <= 0) {
         showStatus('NO IMMUNITY STORED! Collect 5 coins', '#888', 500);
         return;
@@ -1279,6 +1639,93 @@ const Game: React.FC = () => {
     const update = (dt: number) => {
       if (!game.isPlaying) return;
       
+      // In multiplayer mode, send input to server and do client-side prediction
+      if (multiplayerMode === 'multiplayer' && socketService.isConnected()) {
+        // Client-side prediction: apply movement locally for immediate feedback
+        let dx = 0, dy = 0;
+        if (game.keys['ArrowUp'] || game.keys['KeyW']) dy = -1;
+        if (game.keys['ArrowDown'] || game.keys['KeyS']) dy = 1;
+        if (game.keys['ArrowLeft'] || game.keys['KeyA']) dx = -1;
+        if (game.keys['ArrowRight'] || game.keys['KeyD']) dx = 1;
+
+        // Send input to server (throttle to avoid spam) - send even when stopped
+        const now = Date.now();
+        if (!game.lastInputTime || now - game.lastInputTime > 16) { // ~60fps max
+          socketService.sendPlayerInput({
+            ArrowUp: game.keys['ArrowUp'] || game.keys['KeyW'],
+            ArrowDown: game.keys['ArrowDown'] || game.keys['KeyS'],
+            ArrowLeft: game.keys['ArrowLeft'] || game.keys['KeyA'],
+            ArrowRight: game.keys['ArrowRight'] || game.keys['KeyD']
+          });
+          game.lastInputTime = now;
+        }
+
+        // Normalize direction for movement
+        if (dx !== 0 || dy !== 0) {
+          const length = Math.sqrt(dx * dx + dy * dy);
+          dx /= length;
+          dy /= length;
+          game.player.dirX = dx;
+          game.player.dirY = dy;
+        }
+
+        // Set velocity directly (like original single-player, no interpolation lag)
+        game.player.velX = dx * game.player.speed;
+        game.player.velY = dy * game.player.speed;
+
+        // Apply movement with collision (client prediction)
+        const moveX = game.player.velX * dt;
+        const moveY = game.player.velY * dt;
+        
+        if (!checkCollision(game.player.x + moveX, game.player.y, game.player.width, game.player.height, game.map, true)) {
+          game.player.x += moveX;
+        }
+        if (!checkCollision(game.player.x, game.player.y + moveY, game.player.width, game.player.height, game.map, true)) {
+          game.player.y += moveY;
+        }
+
+        // Store predicted position for reconciliation
+        game.predictedPosition = { x: game.player.x, y: game.player.y };
+
+        // Update trail (like original)
+        if (dx !== 0 || dy !== 0) {
+          game.player.trail.push({ x: game.player.x, y: game.player.y });
+          if (game.player.trail.length > 20) game.player.trail.shift();
+        }
+
+        // Client-side lava death check for immediate feedback
+        const gridX = Math.floor(game.player.x / TILE_SIZE);
+        const gridY = Math.floor(game.player.y / TILE_SIZE);
+        if (gridY >= 0 && gridY < MAP_HEIGHT && gridX >= 0 && gridX < MAP_WIDTH) {
+          if (game.map.tiles[gridY][gridX] === 4) {
+            // Check if on a boat
+            const onBoat = game.boats.some((boat: any) => {
+              const bx = boat.x;
+              const by = boat.y;
+              return Math.abs(game.player.x - bx) < (boat.w || 48) / 2 + game.player.width / 2 &&
+                     Math.abs(game.player.y - by) < (boat.h || 48) / 2 + game.player.height / 2;
+            });
+            
+            if (!onBoat) {
+              handleDeath();
+              return;
+            }
+          }
+        }
+
+        // Update camera to follow player (smooth camera)
+        const targetCamX = game.player.x - canvas.width / 2;
+        const targetCamY = game.player.y - canvas.height / 2;
+        game.camera.x += (targetCamX - game.camera.x) * 8 * dt;
+        game.camera.y += (targetCamY - game.camera.y) * 8 * dt;
+
+        // Update boats locally for visual smoothness
+        updateBoats(dt);
+        
+        return; // Skip rest of update logic in multiplayer
+      }
+      
+      // Single-player mode - full local game logic
       game.gameTime += dt;
       
       // Sync game time to React state
@@ -1392,8 +1839,11 @@ const Game: React.FC = () => {
         game.player.dirY = dy;
       }
 
-      game.player.velX = dx * game.player.speed;
-      game.player.velY = dy * game.player.speed;
+      // Smooth velocity interpolation for single-player
+      const targetVelX = dx * game.player.speed;
+      const targetVelY = dy * game.player.speed;
+      game.player.velX += (targetVelX - game.player.velX) * 10 * dt; // Smooth velocity change
+      game.player.velY += (targetVelY - game.player.velY) * 10 * dt;
 
       // Energy recharge based on movement
       if (dx !== 0 || dy !== 0) {
@@ -1412,10 +1862,13 @@ const Game: React.FC = () => {
         if (b !== riddenBoat) b.life = b.maxLife;
       });
 
+      // Smooth movement application
+      const moveX = game.player.velX * dt;
+      const moveY = game.player.velY * dt;
       attemptMove(
         game.player,
-        game.player.velX * dt,
-        game.player.velY * dt,
+        moveX,
+        moveY,
         true
       );
 
@@ -1491,38 +1944,49 @@ const Game: React.FC = () => {
       });
       game.sinkCollectibles = game.sinkCollectibles.filter(s => !s.collected);
 
-      // Portal logic
-      if (game.player.portalCooldown > 0) game.player.portalCooldown -= dt;
+      // Portal logic (only in single-player)
+      if (multiplayerMode === 'single') {
+        if (game.player.portalCooldown > 0) game.player.portalCooldown -= dt;
 
-      for (let i = game.map.portals.length - 1; i >= 0; i--) {
-        const p = game.map.portals[i];
-        p.angle += 2 * dt;
-        if (p.life !== undefined) {
-          p.life -= dt;
-          if (p.life <= 0) {
-            game.map.portals.splice(i, 1);
-            continue;
-          }
-        }
-      }
-
-      if (game.player.portalCooldown <= 0) {
-        for (let i = 0; i < game.map.portals.length; i++) {
+        for (let i = game.map.portals.length - 1; i >= 0; i--) {
           const p = game.map.portals[i];
-          const d = Math.hypot(game.player.x - p.x, game.player.y - p.y);
-          if (d < 20) {
-            const otherPortals = game.map.portals.filter((_, idx) => idx !== i);
-            if (otherPortals.length > 0) {
-              const dest = otherPortals[Math.floor(Math.random() * otherPortals.length)];
-              game.player.x = dest.x;
-              game.player.y = dest.y;
-              game.player.portalCooldown = 2.0;
-              game.player.trail = [];
-              showStatus('PORTAL TRAVEL!', '#0ff');
+          p.angle += 2 * dt;
+          if (p.life !== undefined) {
+            p.life -= dt;
+            if (p.life <= 0) {
+              game.map.portals.splice(i, 1);
+              continue;
             }
-            break;
           }
         }
+
+        if (game.player.portalCooldown <= 0) {
+          for (let i = 0; i < game.map.portals.length; i++) {
+            const p = game.map.portals[i];
+            const d = Math.hypot(game.player.x - p.x, game.player.y - p.y);
+            if (d < 20) {
+              const otherPortals = game.map.portals.filter((_, idx) => idx !== i);
+              if (otherPortals.length > 0) {
+                const dest = otherPortals[Math.floor(Math.random() * otherPortals.length)];
+                game.player.x = dest.x;
+                game.player.y = dest.y;
+                game.player.portalCooldown = 2.0;
+                game.player.trail = [];
+                showStatus('PORTAL TRAVEL!', '#0ff');
+              }
+              break;
+            }
+          }
+        }
+      } else {
+        // In multiplayer, just animate portals
+        game.map.portals.forEach(p => {
+          p.angle += 2 * dt;
+          if (p.life !== undefined) {
+            p.life -= dt;
+          }
+        });
+        game.map.portals = game.map.portals.filter(p => !p.life || p.life > 0);
       }
 
       // Enemy logic
@@ -1760,14 +2224,17 @@ const Game: React.FC = () => {
       });
 
       // Entities - Draw trails
-      const isPlayerWalking = game.player.velX !== 0 || game.player.velY !== 0;
+      const isPlayerWalking = multiplayerMode === 'multiplayer' 
+        ? (game.keys['ArrowUp'] || game.keys['KeyW'] || game.keys['ArrowDown'] || game.keys['KeyS'] || 
+           game.keys['ArrowLeft'] || game.keys['KeyA'] || game.keys['ArrowRight'] || game.keys['KeyD'])
+        : (game.player.velX !== 0 || game.player.velY !== 0);
 
       // Player trail - changes color when immune
       ctx.lineWidth = game.player.width * 0.8;
       ctx.lineCap = 'round';
       ctx.strokeStyle = game.immunityActive ? 'rgba(0, 255, 255, 0.5)' : 'rgba(0, 255, 255, 0.2)';
       ctx.beginPath();
-      if (game.player.trail.length > 0) {
+      if (game.player.trail && game.player.trail.length > 0) {
         ctx.moveTo(game.player.trail[0].x, game.player.trail[0].y);
         for (const p of game.player.trail) ctx.lineTo(p.x, p.y);
       }
@@ -1784,6 +2251,33 @@ const Game: React.FC = () => {
         isPlayerWalking,
         game.immunityActive
       );
+
+      // Draw other players in multiplayer mode
+      if (multiplayerMode === 'multiplayer' && (game as any).otherPlayers) {
+        (game as any).otherPlayers.forEach((otherPlayer: any) => {
+          const isWalking = Math.abs(otherPlayer.dirX) > 0.1 || Math.abs(otherPlayer.dirY) > 0.1;
+          drawQbitIsometric(
+            ctx,
+            otherPlayer.x,
+            otherPlayer.y,
+            otherPlayer.dirX || 0,
+            otherPlayer.dirY || 1,
+            true,
+            isWalking,
+            otherPlayer.immunityActive || false
+          );
+          
+          // Draw other player's trail
+          ctx.lineWidth = 24 * 0.8;
+          ctx.strokeStyle = 'rgba(0, 255, 255, 0.2)';
+          ctx.beginPath();
+          if (otherPlayer.trail && otherPlayer.trail.length > 0) {
+            ctx.moveTo(otherPlayer.trail[0].x, otherPlayer.trail[0].y);
+            otherPlayer.trail.forEach((p: any) => ctx.lineTo(p.x, p.y));
+          }
+          ctx.stroke();
+        });
+      }
 
       // Enemies
       game.enemies.forEach((e) => {
@@ -1969,6 +2463,15 @@ const Game: React.FC = () => {
         4,
         4
       );
+      
+      // Other players on minimap (multiplayer)
+      if (multiplayerMode === 'multiplayer' && (game as any).otherPlayers) {
+        minimapCtx.fillStyle = '#00ffff';
+        (game as any).otherPlayers.forEach((p: any) =>
+          minimapCtx.fillRect((p.x * sc) / TILE_SIZE - 2, (p.y * sc) / TILE_SIZE - 2, 4, 4)
+        );
+      }
+      
       minimapCtx.fillStyle = '#f00';
       game.enemies.forEach((e) =>
         minimapCtx.fillRect((e.x * sc) / TILE_SIZE - 2, (e.y * sc) / TILE_SIZE - 2, 4, 4)
@@ -2014,7 +2517,7 @@ const Game: React.FC = () => {
       window.removeEventListener('keyup', handleKeyUp);
       if (game.animationId) cancelAnimationFrame(game.animationId);
     };
-  }, []);
+  }, [multiplayerMode, roomCode]);
 
   const handleRestart = () => {
     if (gameRef.current) {
@@ -2175,28 +2678,146 @@ const Game: React.FC = () => {
             </h2>
             <p className="text-muted-foreground text-center mb-6">Survive as long as you can!</p>
             
+            {/* Game Mode Selection */}
+            <div className="mb-4 flex gap-2">
+              <button
+                onClick={() => {
+                  setMultiplayerMode('single');
+                  setRoomCode('');
+                  setRoomCodeInput('');
+                  setIsHost(false);
+                  setRoomPlayers([]);
+                }}
+                className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
+                  multiplayerMode === 'single'
+                    ? 'bg-cyan-500 text-white'
+                    : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                }`}
+              >
+                <Globe size={18} className="inline mr-2" />
+                Single Player
+              </button>
+              <button
+                onClick={() => {
+                  setMultiplayerMode('multiplayer');
+                  socketService.connect();
+                }}
+                className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
+                  multiplayerMode === 'multiplayer'
+                    ? 'bg-cyan-500 text-white'
+                    : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                }`}
+              >
+                <Users size={18} className="inline mr-2" />
+                Multiplayer
+              </button>
+            </div>
+
+            {/* Connection Status (Multiplayer) */}
+            {multiplayerMode === 'multiplayer' && (
+              <div className="mb-4 p-3 rounded-lg bg-secondary/50 border border-border">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-muted-foreground">Connection:</span>
+                  <span className={`text-sm font-medium ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
+                    {isConnected ? '● Connected' : '○ Disconnected'}
+                  </span>
+                </div>
+                {roomCode && (
+                  <div className="mt-2">
+                    <div className="text-xs text-muted-foreground mb-1">Room Code:</div>
+                    <div className="text-lg font-mono font-bold text-cyan-400">{roomCode}</div>
+                    {isHost && (
+                      <div className="text-xs text-amber-400 mt-1">You are the host</div>
+                    )}
+                  </div>
+                )}
+                {roomPlayers.length > 0 && (
+                  <div className="mt-2">
+                    <div className="text-xs text-muted-foreground mb-1">Players ({roomPlayers.length}):</div>
+                    <div className="flex flex-wrap gap-1">
+                      {roomPlayers.map((p) => (
+                        <span key={p.id} className="text-xs bg-background px-2 py-1 rounded">
+                          {p.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            
             <input
               type="text"
               placeholder="Enter your name..."
               value={playerName}
               onChange={(e) => setPlayerName(e.target.value.slice(0, 15))}
-              onKeyDown={(e) => e.key === 'Enter' && startGame()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (multiplayerMode === 'multiplayer' && !roomCode) {
+                    createRoom();
+                  } else {
+                    startGame();
+                  }
+                }
+              }}
               className="w-full px-4 py-3 bg-background border border-border rounded-lg 
                          text-foreground text-lg mb-4 focus:outline-none focus:ring-2 
                          focus:ring-cyan-400"
               autoFocus
             />
-            
-            <button
-              onClick={startGame}
-              disabled={!playerName.trim()}
-              className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
-                         text-white font-bold rounded-lg disabled:opacity-50 
-                         disabled:cursor-not-allowed hover:from-cyan-400 hover:to-blue-500
-                         transition-all"
-            >
-              Start Game
-            </button>
+
+            {/* Multiplayer Room Actions */}
+            {multiplayerMode === 'multiplayer' && !roomCode && (
+              <div className="space-y-2 mb-4">
+                <button
+                  onClick={createRoom}
+                  disabled={!playerName.trim() || !isConnected}
+                  className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
+                             text-white font-bold rounded-lg disabled:opacity-50 
+                             disabled:cursor-not-allowed hover:from-cyan-400 hover:to-blue-500
+                             transition-all"
+                >
+                  Create Room
+                </button>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Room Code"
+                    value={roomCodeInput}
+                    onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase().slice(0, 6))}
+                    onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
+                    className="flex-1 px-4 py-3 bg-background border border-border rounded-lg 
+                               text-foreground text-lg focus:outline-none focus:ring-2 
+                               focus:ring-cyan-400 uppercase"
+                  />
+                  <button
+                    onClick={joinRoom}
+                    disabled={!playerName.trim() || !roomCodeInput.trim() || !isConnected}
+                    className="px-6 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg 
+                               disabled:opacity-50 disabled:cursor-not-allowed hover:bg-secondary/80
+                               transition-all"
+                  >
+                    Join
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Start Game Button */}
+            {(!multiplayerMode || roomCode) && (
+              <button
+                onClick={startGame}
+                disabled={!playerName.trim() || (multiplayerMode === 'multiplayer' && !isConnected)}
+                className="w-full py-3 bg-gradient-to-r from-cyan-500 to-blue-600 
+                           text-white font-bold rounded-lg disabled:opacity-50 
+                           disabled:cursor-not-allowed hover:from-cyan-400 hover:to-blue-500
+                           transition-all"
+              >
+                {multiplayerMode === 'multiplayer' 
+                  ? (isHost ? 'Start Game (Host)' : 'Waiting for host...')
+                  : 'Start Game'}
+              </button>
+            )}
             
             <button
               onClick={() => setShowLeaderboard(true)}
@@ -2295,9 +2916,16 @@ const Game: React.FC = () => {
       {gameState === 'playing' && (
         <div className="absolute top-5 left-5 text-foreground pointer-events-none w-80">
           <div className="flex items-center justify-between">
-            <h1 className="m-0 text-2xl text-cyan-400 uppercase tracking-widest font-bold drop-shadow-lg">
-              Qbit City
-            </h1>
+            <div>
+              <h1 className="m-0 text-2xl text-cyan-400 uppercase tracking-widest font-bold drop-shadow-lg">
+                Qbit City
+              </h1>
+              {multiplayerMode === 'multiplayer' && roomCode && (
+                <div className="text-xs text-muted-foreground mt-1">
+                  Room: {roomCode} • {roomPlayers.length} player{roomPlayers.length !== 1 ? 's' : ''}
+                </div>
+              )}
+            </div>
             <button
               onClick={() => setShowLeaderboard(true)}
               className="pointer-events-auto p-2 text-amber-400 hover:text-amber-300 transition-colors"
